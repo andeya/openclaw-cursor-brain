@@ -4,6 +4,8 @@
     Use <a href="https://cursor.sh">Cursor</a> as the AI brain for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> — with full access to every plugin tool.
   </p>
   <p align="center">
+    <a href="https://www.npmjs.com/package/openclaw-cursor-bridge"><img src="https://img.shields.io/npm/v/openclaw-cursor-bridge.svg" alt="npm version"></a>
+    <a href="https://www.npmjs.com/package/openclaw-cursor-bridge"><img src="https://img.shields.io/npm/dm/openclaw-cursor-bridge.svg" alt="npm downloads"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-%3E%3D18-green.svg" alt="Node.js >= 18"></a>
     <a href="https://cursor.sh"><img src="https://img.shields.io/badge/Cursor-Agent%20CLI-purple.svg" alt="Cursor"></a>

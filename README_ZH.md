@@ -1,5 +1,9 @@
 # openclaw-cursor-bridge
 
+[![npm version](https://img.shields.io/npm/v/openclaw-cursor-bridge.svg)](https://www.npmjs.com/package/openclaw-cursor-bridge)
+[![npm downloads](https://img.shields.io/npm/dm/openclaw-cursor-bridge.svg)](https://www.npmjs.com/package/openclaw-cursor-bridge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 [English](./README.md) | 中文
 
 将 [Cursor Agent CLI](https://cursor.sh) 作为 [OpenClaw](https://github.com/openclaw/openclaw) 的 AI 大脑，通过 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) 桥接 OpenClaw Gateway 中注册的所有插件工具，使 Cursor Agent 能直接调用飞书、Slack、GitHub 等第三方插件能力。
