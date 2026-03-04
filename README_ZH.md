@@ -1,4 +1,4 @@
-# @openclaw/cursor-bridge
+# openclaw-cursor-bridge
 
 [English](./README.md) | 中文
 
@@ -42,7 +42,7 @@ openclaw plugins install /path/to/openclaw-cursor-bridge
 openclaw plugins install ./openclaw-cursor-bridge-1.0.0.tgz
 
 # 从 npm 安装（公开发布后）
-openclaw plugins install @openclaw/cursor-bridge
+openclaw plugins install openclaw-cursor-bridge
 
 # 重启 gateway 加载插件
 openclaw gateway restart

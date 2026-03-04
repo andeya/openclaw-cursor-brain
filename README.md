@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">@openclaw/cursor-bridge</h1>
+  <h1 align="center">openclaw-cursor-bridge</h1>
   <p align="center">
     Use <a href="https://cursor.sh">Cursor</a> as the AI brain for <a href="https://github.com/nicepkg/openclaw">OpenClaw</a> — with full access to every plugin tool.
   </p>
@@ -7,6 +7,7 @@
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-%3E%3D18-green.svg" alt="Node.js >= 18"></a>
     <a href="https://cursor.sh"><img src="https://img.shields.io/badge/Cursor-Agent%20CLI-purple.svg" alt="Cursor"></a>
+    <br/>
     <a href="./README_ZH.md">中文文档</a>
   </p>
 </p>
@@ -56,7 +57,7 @@ openclaw plugins install /path/to/openclaw-cursor-bridge
 openclaw plugins install ./openclaw-cursor-bridge-1.0.0.tgz
 
 # From npm (after public release)
-openclaw plugins install @openclaw/cursor-bridge
+openclaw plugins install openclaw-cursor-bridge
 
 # Restart the gateway to load the plugin
 openclaw gateway restart
@@ -83,11 +84,11 @@ Share the `.tgz` with teammates — they run `openclaw plugins install <file>.tg
 
 All options go in `openclaw.json` under `plugins.entries.cursor-bridge.config`:
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `cursorPath` | `string` | auto-detect | Path to the Cursor Agent CLI binary. Leave empty for automatic detection via `which agent` + common paths. |
-| `model` | `string` | `"auto"` | Primary model, written as `cursor-cli/<model>` in `agents.defaults.model.primary`. |
-| `fallbackModel` | `string` | `"sonnet-4.6"` | Fallback model, written to `agents.defaults.model.fallbacks`. |
+| Option          | Type     | Default        | Description                                                                                                |
+| --------------- | -------- | -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `cursorPath`    | `string` | auto-detect    | Path to the Cursor Agent CLI binary. Leave empty for automatic detection via `which agent` + common paths. |
+| `model`         | `string` | `"auto"`       | Primary model, written as `cursor-cli/<model>` in `agents.defaults.model.primary`.                         |
+| `fallbackModel` | `string` | `"sonnet-4.6"` | Fallback model, written to `agents.defaults.model.fallbacks`.                                              |
 
 Example:
 
@@ -111,13 +112,13 @@ Setup is **idempotent** — runs on every gateway start and never duplicates exi
 
 ## CLI Commands
 
-| Command | Description |
-|---------|-------------|
-| `openclaw cursor-bridge setup` | Re-run configuration (writes mcp.json + CLI backend) |
-| `openclaw cursor-bridge doctor` | Health check all components |
-| `openclaw cursor-bridge status` | Show current configuration details |
-| `openclaw cursor-bridge upgrade <source>` | One-command upgrade (cleanup → uninstall → install) |
-| `openclaw cursor-bridge uninstall` | One-command full uninstall (cleanup configs + remove files) |
+| Command                                   | Description                                                 |
+| ----------------------------------------- | ----------------------------------------------------------- |
+| `openclaw cursor-bridge setup`            | Re-run configuration (writes mcp.json + CLI backend)        |
+| `openclaw cursor-bridge doctor`           | Health check all components                                 |
+| `openclaw cursor-bridge status`           | Show current configuration details                          |
+| `openclaw cursor-bridge upgrade <source>` | One-command upgrade (cleanup → uninstall → install)         |
+| `openclaw cursor-bridge uninstall`        | One-command full uninstall (cleanup configs + remove files) |
 
 ### Upgrade
 
@@ -140,12 +141,12 @@ This performs a complete teardown:
 3. Cleans up all custom configuration (see table below)
 4. Prompts you to restart the gateway
 
-| Location | What's removed |
-|----------|----------------|
-| `~/.cursor/mcp.json` | `openclaw-gateway` MCP server entry |
-| `openclaw.json` `agents.defaults.cliBackends` | `cursor-cli` backend config |
-| `openclaw.json` `agents.defaults.model` | `cursor-cli/*` model references |
-| `openclaw.json` `plugins.entries` | `cursor-bridge` registration |
+| Location                                      | What's removed                      |
+| --------------------------------------------- | ----------------------------------- |
+| `~/.cursor/mcp.json`                          | `openclaw-gateway` MCP server entry |
+| `openclaw.json` `agents.defaults.cliBackends` | `cursor-cli` backend config         |
+| `openclaw.json` `agents.defaults.model`       | `cursor-cli/*` model references     |
+| `openclaw.json` `plugins.entries`             | `cursor-bridge` registration        |
 
 > **Warning:** Do not run `openclaw plugins uninstall cursor-bridge` directly — it only removes the config entry, not the custom configuration above. If you did this by mistake, manually edit `~/.cursor/mcp.json` and `~/.openclaw/openclaw.json` to remove the leftover entries.
 
@@ -180,7 +181,17 @@ This performs a complete teardown:
   "cliBackends": {
     "cursor-cli": {
       "command": "/bin/bash",
-      "args": ["-c", "export SHELL=/bin/bash && cd <workspace> && exec <cursorPath> \"$@\"", "_", "-p", "--output-format", "json", "--trust", "--approve-mcps", "--force"],
+      "args": [
+        "-c",
+        "export SHELL=/bin/bash && cd <workspace> && exec <cursorPath> \"$@\"",
+        "_",
+        "-p",
+        "--output-format",
+        "json",
+        "--trust",
+        "--approve-mcps",
+        "--force"
+      ],
       "output": "json",
       "input": "arg",
       "modelArg": "--model",
@@ -193,19 +204,19 @@ This performs a complete teardown:
 
 ## Cross-platform Support
 
-| Platform | Cursor CLI detection | Shell | mcp.json location |
-|----------|---------------------|-------|--------------------|
-| macOS | `~/.local/bin/agent`, `/usr/local/bin/agent`, `~/.cursor/bin/agent` | `/bin/bash` | `~/.cursor/mcp.json` |
-| Linux | Same as macOS | `/bin/bash` | `~/.cursor/mcp.json` |
-| Windows | `%LOCALAPPDATA%\Programs\cursor\...\agent.exe`, `~\.cursor\bin\agent.exe` | `cmd.exe` | `%USERPROFILE%\.cursor\mcp.json` |
+| Platform | Cursor CLI detection                                                      | Shell       | mcp.json location                |
+| -------- | ------------------------------------------------------------------------- | ----------- | -------------------------------- |
+| macOS    | `~/.local/bin/agent`, `/usr/local/bin/agent`, `~/.cursor/bin/agent`       | `/bin/bash` | `~/.cursor/mcp.json`             |
+| Linux    | Same as macOS                                                             | `/bin/bash` | `~/.cursor/mcp.json`             |
+| Windows  | `%LOCALAPPDATA%\Programs\cursor\...\agent.exe`, `~\.cursor\bin\agent.exe` | `cmd.exe`   | `%USERPROFILE%\.cursor\mcp.json` |
 
 ## MCP Server Tools
 
 The MCP Server auto-discovers and registers all OpenClaw plugin tools at startup. Two built-in tools are always available:
 
-| Tool | Description |
-|------|-------------|
-| `openclaw_invoke` | Universal invoker — call any Gateway tool by name |
+| Tool                | Description                                           |
+| ------------------- | ----------------------------------------------------- |
+| `openclaw_invoke`   | Universal invoker — call any Gateway tool by name     |
 | `openclaw_discover` | Discovery — list all available tools with live status |
 
 ### Tool Discovery Mechanism
@@ -220,14 +231,17 @@ No regex, no log parsing — fully structured:
 ## Troubleshooting
 
 **`doctor` reports "Cursor Agent CLI not found"**
+
 - Ensure Cursor is installed and has been launched at least once (to generate the `agent` binary)
 - Or set the path explicitly: `config.cursorPath = "/path/to/agent"`
 
 **Tool calls return "Gateway error"**
+
 - Confirm the gateway is running: `openclaw gateway status`
 - Check that tokens match between `~/.cursor/mcp.json` and `openclaw.json`
 
 **Newly installed plugin tools don't appear**
+
 - Restart the gateway to trigger tool registration
 - Call `openclaw_discover` to check live tool availability
 - Use `openclaw_invoke` to call any tool directly by name

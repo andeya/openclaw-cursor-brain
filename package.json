@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/cursor-bridge",
+  "name": "openclaw-cursor-bridge",
   "version": "1.0.0",
   "description": "Use Cursor as the AI brain for OpenClaw — bridges all plugin tools via MCP with zero manual config.",
   "type": "module",
@@ -43,7 +43,7 @@
   "openclaw": {
     "extensions": ["./index.ts"],
     "install": {
-      "npmSpec": "@openclaw/cursor-bridge",
+      "npmSpec": "openclaw-cursor-bridge",
       "localPath": "extensions/cursor-bridge",
       "defaultChoice": "local"
     }
