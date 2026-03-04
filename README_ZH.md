@@ -50,9 +50,6 @@ openclaw cursor-brain doctor    # 验证
 
 ## 工作原理
 
-<details>
-<summary><strong>架构图</strong></summary>
-
 ```mermaid
 flowchart TB
     subgraph path1["OpenClaw → Cursor（AI 后端）"]
@@ -73,8 +70,6 @@ flowchart TB
     style Proxy fill:#2563eb,color:#fff
     style SSE fill:#10b981,color:#fff
 ```
-
-</details>
 
 两条自动配置的路径：
 

@@ -50,9 +50,6 @@ During **setup** (and **upgrade**), models are dynamically discovered from `curs
 
 ## How It Works
 
-<details>
-<summary><strong>Architecture</strong></summary>
-
 ```mermaid
 flowchart TB
     subgraph path1["OpenClaw → Cursor (AI Backend)"]
@@ -73,8 +70,6 @@ flowchart TB
     style Proxy fill:#2563eb,color:#fff
     style SSE fill:#10b981,color:#fff
 ```
-
-</details>
 
 Two auto-configured paths:
 
