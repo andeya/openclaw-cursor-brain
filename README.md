@@ -56,7 +56,7 @@ openclaw plugins install /path/to/openclaw-cursor-bridge
 # From .tgz archive (team distribution)
 openclaw plugins install ./openclaw-cursor-bridge-1.0.0.tgz
 
-# From npm (after public release)
+# From npm
 openclaw plugins install openclaw-cursor-bridge
 
 # Restart the gateway to load the plugin
