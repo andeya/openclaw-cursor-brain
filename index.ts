@@ -23,9 +23,9 @@ function resolvePluginDir(api: OpenClawPluginApi): string {
 
 const plugin = {
   id: PLUGIN_ID,
-  name: "Cursor Bridge",
+  name: "Cursor Brain",
   description:
-    "Bridge OpenClaw Gateway tools to Cursor Agent via MCP. " +
+    "Use Cursor Agent as the AI brain for OpenClaw via MCP. " +
     "Auto-discovers plugin tools and proxies them through the Gateway REST API.",
   configSchema: emptyPluginConfigSchema(),
 
@@ -54,7 +54,7 @@ const plugin = {
       for (const e of result.errors) api.logger.error(e);
 
       if (result.cursorPath && result.mcpConfigured) {
-        api.logger.info("Cursor Bridge setup complete");
+        api.logger.info("Cursor Brain setup complete");
       }
 
       const backends = (config.agents as any)?.defaults?.cliBackends ?? {};
@@ -96,11 +96,11 @@ const plugin = {
     api.registerCli((ctx) => {
       const prog = ctx.program
         .command("cursor-brain")
-        .description("Cursor Agent MCP bridge management");
+        .description("Cursor Brain — AI backend management via MCP");
 
       prog
         .command("setup")
-        .description("Run or re-run MCP bridge configuration")
+        .description("Run or re-run MCP server configuration")
         .action(() => {
           const setupCtx: SetupContext = {
             pluginDir,
@@ -115,7 +115,7 @@ const plugin = {
             for (const e of result.errors) console.error(`  \u2717 ${e}`);
             process.exitCode = 1;
           } else {
-            console.log("  \u2713 MCP bridge configured successfully");
+            console.log("  \u2713 MCP server configured successfully");
             console.log(`    Cursor: ${result.cursorPath}`);
             console.log(`    MCP config: ${getCursorMcpConfigPath()}`);
           }
@@ -123,7 +123,7 @@ const plugin = {
 
       prog
         .command("doctor")
-        .description("Check Cursor Bridge health")
+        .description("Check Cursor Brain health")
         .action(() => {
           const checks = runDoctorChecks({
             gatewayPort: config.gateway?.port ?? 18789,
@@ -137,14 +137,14 @@ const plugin = {
 
       prog
         .command("status")
-        .description("Show current bridge configuration status")
+        .description("Show current configuration status")
         .action(() => {
           const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
           const backends = (config.agents as any)?.defaults?.cliBackends ?? {};
           const hasCli = !!backends[CLI_BACKEND_ID];
           const model = (config.agents as any)?.defaults?.model;
 
-          console.log("Cursor Bridge Status\n");
+          console.log("Cursor Brain Status\n");
           console.log(`  Platform:       ${process.platform}`);
           console.log(`  Plugin dir:     ${pluginDir}`);
           console.log(`  Cursor path:    ${cursorPath || "not found"}`);
@@ -159,7 +159,7 @@ const plugin = {
         .command("uninstall")
         .description("Clean up configurations and remove the plugin completely")
         .action(() => {
-          console.log("Cursor Bridge Uninstall\n");
+          console.log("Cursor Brain Uninstall\n");
 
           const installPath = join(homedir(), ".openclaw", "extensions", PLUGIN_ID);
 
@@ -208,7 +208,7 @@ const plugin = {
         .command("upgrade <source>")
         .description("Upgrade plugin from a path, .tgz archive, or npm spec")
         .action((source: string) => {
-          console.log("Cursor Bridge Upgrade\n");
+          console.log("Cursor Brain Upgrade\n");
 
           const installPath = join(homedir(), ".openclaw", "extensions", PLUGIN_ID);
 

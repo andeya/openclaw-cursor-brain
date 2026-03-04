@@ -121,7 +121,7 @@ export function runSetup(ctx: SetupContext): SetupResult {
 
   result.mcpConfigured = configureMcpJson(ctx);
   if (!result.mcpConfigured) {
-    result.errors.push(`Failed to configure MCP bridge in ${getCursorMcpConfigPath()}`);
+    result.errors.push(`Failed to configure MCP server in ${getCursorMcpConfigPath()}`);
   }
 
   return result;

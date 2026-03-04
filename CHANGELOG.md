@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release
-- MCP bridge server with structured tool discovery (JSON parsing + REST API probing)
+- MCP server with structured tool discovery (JSON parsing + REST API probing)
 - Auto-detection of Cursor Agent CLI across macOS, Linux, and Windows
 - Idempotent setup: auto-configures `~/.cursor/mcp.json` and `openclaw.json` on gateway start
 - CLI commands: `setup`, `doctor`, `status`, `uninstall`, `upgrade`

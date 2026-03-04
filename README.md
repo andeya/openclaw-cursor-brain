@@ -17,7 +17,7 @@
 
 ---
 
-**openclaw-cursor-brain** is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that turns [Cursor Agent CLI](https://cursor.sh) into a fully-integrated LLM backend. It bridges all OpenClaw plugin tools (Feishu, Slack, GitHub, custom plugins, etc.) to Cursor through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), so the AI can call them natively.
+**openclaw-cursor-brain** is an [OpenClaw](https://github.com/openclaw/openclaw) plugin that turns [Cursor Agent CLI](https://cursor.sh) into a fully-integrated AI backend. It connects all OpenClaw plugin tools (Feishu, Slack, GitHub, custom plugins, etc.) to Cursor through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), giving the AI native access to every tool.
 
 **Zero manual config.** Install, restart, done.
 
@@ -262,7 +262,7 @@ cursor-brain/
     doctor.ts               # Health checks
     cleanup.ts              # Uninstall cleanup logic
   mcp-server/
-    server.mjs              # MCP bridge (JSON parsing + REST probing)
+    server.mjs              # MCP server (JSON parsing + REST probing)
   skills/
     cursor-brain/
       SKILL.md              # Agent skill description

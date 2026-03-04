@@ -108,7 +108,7 @@ function createGatewayCheck(port: number, token: string): CheckResult {
 }
 
 export function formatDoctorResults(checks: CheckResult[]): string {
-  const lines = ["Cursor Bridge Doctor", ""];
+  const lines = ["Cursor Brain Doctor", ""];
   for (const c of checks) {
     const icon = c.ok ? "\u2713" : "\u2717";
     lines.push(`  ${icon} ${c.label}: ${c.detail}`);

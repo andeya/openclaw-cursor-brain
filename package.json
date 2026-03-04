@@ -1,7 +1,7 @@
 {
   "name": "openclaw-cursor-brain",
   "version": "1.0.0",
-  "description": "Use Cursor as the AI brain for OpenClaw — bridges all plugin tools via MCP with zero manual config.",
+  "description": "Use Cursor as the AI brain for OpenClaw — connects all plugin tools via MCP with zero manual config.",
   "type": "module",
   "license": "MIT",
   "author": "andeya <andeyalee@outlook.com>",
@@ -20,7 +20,7 @@
     "model-context-protocol",
     "ai-agent",
     "llm-backend",
-    "tool-bridge",
+    "ai-brain",
     "plugin"
   ],
   "engines": {

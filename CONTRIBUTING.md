@@ -43,7 +43,7 @@ src/
   doctor.ts           → Health check implementation
   cleanup.ts          → Uninstall cleanup (direct file I/O)
 mcp-server/
-  server.mjs          → MCP bridge server (tool discovery + REST proxy)
+  server.mjs          → MCP server (tool discovery + REST proxy)
 skills/
   cursor-brain/
     SKILL.md          → Agent skill description for Cursor

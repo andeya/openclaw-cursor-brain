@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// OpenClaw Gateway MCP Bridge
+// OpenClaw Gateway MCP Server
 // Discovers plugin tools from openclaw.json + REST API probing (no log regex).
 // Spawned automatically by cursor-cli via ~/.cursor/mcp.json.
 
@@ -136,7 +136,7 @@ async function discoverVerifiedTools() {
 
 // ── Build MCP server ────────────────────────────────────────────────────────
 
-const server = new McpServer({ name: "openclaw-gateway-bridge", version: "2.0.0" });
+const server = new McpServer({ name: "openclaw-gateway", version: "2.0.0" });
 
 const registeredNames = new Set();
 

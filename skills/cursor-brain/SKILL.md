@@ -1,6 +1,6 @@
-# Cursor Bridge
+# Cursor Brain
 
-Bridge between OpenClaw Gateway plugin tools and the Cursor Agent via MCP.
+Use Cursor Agent as the AI brain for OpenClaw, connecting all Gateway plugin tools via MCP.
 
 ## When to activate
 
@@ -11,7 +11,7 @@ Activate when:
 
 ## Available MCP tools
 
-The Cursor Bridge exposes all OpenClaw Gateway plugin tools as MCP tools. Tools are auto-registered on each session start.
+Cursor Brain exposes all OpenClaw Gateway plugin tools as MCP tools. Tools are auto-registered on each session start.
 
 ### Discovery
 

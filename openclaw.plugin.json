@@ -1,7 +1,7 @@
 {
   "id": "cursor-brain",
-  "name": "Cursor Bridge",
-  "description": "Bridge OpenClaw Gateway tools to Cursor Agent via MCP",
+  "name": "Cursor Brain",
+  "description": "Use Cursor Agent as the AI brain for OpenClaw via MCP",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
