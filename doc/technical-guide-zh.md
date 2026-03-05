@@ -467,25 +467,22 @@ Streaming Proxy 是一个 OpenAI 兼容的 HTTP 服务器，将 cursor-agent CLI
 |---|---|---|
 | `/v1/chat/completions` | POST | 聊天补全（支持 stream/non-stream） |
 | `/v1/models` | GET | 列出可用模型 |
-| `/v1/health` | GET | 健康检查（含 `scriptHash`、`sessions` 数） |
+| `/v1/health` | GET | 健康检查（含 `scriptHash`、`sessions`、`consecutiveFailures`、`lastErrorTime`、`lastErrorMsg`） |
 
 #### cursor-agent 进程管理
 
 ```javascript
-// streaming-proxy.mjs L211-227
-function spawnCursorAgent(userMsg, sessionKey, requestModel) {
-  const args = [
-    "-p",
-    "--output-format", OUTPUT_FORMAT,
-    "--stream-partial-output",
-    "--trust", "--approve-mcps", "--force"
-  ];
+function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = false } = {}) {
+  const cursorSessionId = !skipSession && sessionKey ? sessions.get(sessionKey) : null;
+  const args = ["-p", "--output-format", OUTPUT_FORMAT, "--stream-partial-output",
+                "--trust", "--approve-mcps", "--force"];
   if (model) args.push("--model", model);
   if (cursorSessionId) args.push("--resume", cursorSessionId);
 
   const child = spawn(CURSOR_PATH, args, { ... });
   child.stdin.write(userMsg);
   child.stdin.end();
+  child._usedSession = !!cursorSessionId;
   return child;
 }
 ```
@@ -495,6 +492,29 @@ function spawnCursorAgent(userMsg, sessionKey, requestModel) {
 - `--stream-partial-output`：启用增量输出
 - `--trust --approve-mcps --force`：自动信任 MCP 工具调用
 - `--resume`：复用已有会话
+- `skipSession`：重试时跳过 `--resume`，避免 stale session 导致持续空响应
+
+#### 三层容错机制
+
+**请求级：Session-aware 重试**
+
+当 cursor-agent 返回空结果且使用了 `--resume` session 时，自动清除该 session 并以 `skipSession=true` 重试一次。仅在未开始向客户端写入内容时可重试，避免重复输出。超时导致的空结果不触发重试。
+
+**进程级：连续失败自愈**
+
+Proxy 跟踪连续失败次数（`consecutiveFailures`）。每次请求成功时重置为 0，失败时递增。达到阈值（默认 5，可通过 `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` 配置）后 `process.exit(2)` 自退出，触发网关级重启。`/v1/health` 暴露 `consecutiveFailures`、`lastErrorTime`、`lastErrorMsg` 用于诊断。
+
+**网关级：崩溃自动重启**
+
+`index.ts` 中 `proxyChild.on("exit")` 对非正常退出实施指数退避重启：
+
+| 退出码 | 行为 |
+|---|---|
+| `0` / `null` | 正常退出（SIGTERM），不重启 |
+| `2` | 自愈退出（连续失败），2s 后重启 |
+| 其他 | 异常崩溃，指数退避重启（2s → 10s → 60s） |
+| 连续崩溃 ≥3 次 | 放弃重启，日志提示手动 `proxy restart` |
+| 稳定运行 >5min 后崩溃 | 重置计数器，视为新一轮 |
 
 #### 事件流处理
 
@@ -793,12 +813,26 @@ flowchart TD
     Wait --> Spawn["🔄 spawn node streaming-proxy.mjs<br/>注入 CURSOR_PATH 等环境变量"]
     Spawn --> Listen["✅ proxy 监听 :18790<br/>就绪"]
 
+    Listen --> Running["🏃 运行中"]
+    Running --> ExitEvent{"proxyChild.on(exit)<br/>退出码?"}
+    ExitEvent -->|"code=0 / null"| Done["✅ 正常退出<br/>不重启"]
+    ExitEvent -->|"code≠0"| CheckUptime{"运行时长 > 5min?"}
+    CheckUptime -->|"是"| ResetCount["重置 restartCount=0"]
+    CheckUptime -->|"否"| CheckCount
+    ResetCount --> CheckCount{"restartCount<br/>≥ 3?"}
+    CheckCount -->|"是"| GiveUp["❌ 放弃重启<br/>日志提示手动 proxy restart"]
+    CheckCount -->|"否"| AutoRestart["⏱️ 指数退避重启<br/>2s → 10s → 60s"]
+    AutoRestart --> Kill
+
     style GWStart fill:#0891b2,color:#fff
     style NeedStart fill:#ea580c,color:#fff
     style Kill fill:#dc2626,color:#fff
     style Spawn fill:#2563eb,color:#fff
     style Listen fill:#059669,color:#fff
     style UpToDate fill:#059669,color:#fff
+    style Done fill:#059669,color:#fff
+    style GiveUp fill:#dc2626,color:#fff
+    style AutoRestart fill:#f59e0b,color:#000
 ```
 
 ---
@@ -954,6 +988,7 @@ openclaw cursor-brain setup     # MCP 配置 + 模型选择
 | `CURSOR_PROXY_INSTANT_RESULT` | `true` | 批量结果一次性发送（不分块） |
 | `CURSOR_PROXY_STREAM_SPEED` | `200` | 分块速度（chars/s，仅 INSTANT_RESULT=false） |
 | `CURSOR_PROXY_REQUEST_TIMEOUT` | `300000` | 单请求超时（5 分钟） |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `5` | 连续失败上限，超过后 proxy 自退出触发重启 |
 
 ### 6.4 插件配置 Schema
 
@@ -1142,6 +1177,10 @@ checks.push({
 | `DEFAULT_PROXY_PORT` | `18790` | Streaming Proxy 默认端口 |
 | `CANDIDATE_TTL_MS` | `60000` | 工具缓存 TTL (60 秒) |
 | `MAX_SESSIONS` | `100` | 最大 session 持久化数量 |
+| `MAX_CONSECUTIVE_FAILURES` | `5` | Proxy 连续失败自退出阈值 |
+| `MAX_PROXY_RESTARTS` | `3` | 网关级最大自动重启次数 |
+| `PROXY_RESTART_DELAYS` | `[2s, 10s, 60s]` | 网关级重启指数退避延迟 |
+| `PROXY_STABLE_PERIOD` | `300000` (5min) | 稳定运行时长，超过后重置重启计数 |
 | `TOOL_TIMEOUT_MS` | `60000` | 工具调用超时 (60 秒) |
 | `TOOL_RETRY_COUNT` | `2` | 工具调用最大重试次数 |
 | `TOOL_RETRY_DELAY_MS` | `1000` | 重试间隔 (1 秒) |

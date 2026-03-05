@@ -128,6 +128,8 @@ Sessions are persisted to disk and reused via `--resume` for faster subsequent r
 - **Session auto-derive** — session keys automatically derived from conversation metadata (sender/group/topic) in user messages; no explicit session ID required from Gateway
 - **Session persistence** — cursor-agent sessions persisted to disk (`~/.openclaw/cursor-sessions.json`); explicit session IDs also accepted via body fields or HTTP headers (`X-OpenClaw-Session-Id`, `X-Session-Id`)
 - **Auto-restart on upgrade** — proxy exposes a `scriptHash` in `/v1/health`; gateway compares it against the installed script hash and auto-restarts when code changes
+- **Three-layer fault tolerance** — request-level: auto-clear stale session and retry once; process-level: self-exit after consecutive failures to trigger restart; gateway-level: exponential backoff auto-restart on crash (2s → 10s → 60s, resets after 5min stable)
+- **Version guard** — `upgrade` command detects version comparison; downgrade or same-version requires confirmation
 - **Standalone proxy** — `streaming-proxy.mjs` runs independently as OpenAI-compatible API (auto-detection, API key auth, CORS)
 - **Reliability** — tool call timeout (60s), retry (2x), structured MCP errors (`isError: true`)
 - **Proxy management** — `proxy status/stop/restart/log` commands for lifecycle control without restarting gateway
@@ -159,6 +161,7 @@ In `openclaw.json` under `plugins.entries.openclaw-cursor-brain.config`:
 | `CURSOR_PROXY_FORWARD_THINKING` | `false` | Forward LLM reasoning as `reasoning_content` in SSE chunks |
 | `CURSOR_PROXY_STREAM_SPEED` | `200` | Chunked streaming speed (chars/sec, only when `INSTANT_RESULT=false`) |
 | `CURSOR_PROXY_REQUEST_TIMEOUT` | `300000` | Per-request timeout in ms (default 5 min) |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `5` | Consecutive failure threshold; proxy self-exits for restart when exceeded |
 | `CURSOR_PROXY_API_KEY` | *(none)* | API key for standalone proxy auth |
 
 </details>

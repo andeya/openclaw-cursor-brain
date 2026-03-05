@@ -128,6 +128,8 @@ flowchart LR
 - **Session 自动推导** — 自动从消息元数据（sender/group/topic）推导 session key，Gateway 无需显式传递 session ID
 - **会话持久化** — cursor-agent 会话持久化到磁盘（`~/.openclaw/cursor-sessions.json`）；也支持通过 body 字段或 HTTP 头（`X-OpenClaw-Session-Id`、`X-Session-Id`）显式传递
 - **升级自动重启** — proxy 在 `/v1/health` 暴露 `scriptHash`；Gateway 比较哈希值，代码变更后自动重启
+- **三层容错** — 请求级：stale session 自动清除并重试一次；进程级：连续失败达阈值后 proxy 自退出触发重启；网关级：崩溃后指数退避自动重启（2s → 10s → 60s，稳定 5min 后重置）
+- **版本保护** — `upgrade` 命令检测版本大小，降级或同版本需确认
 - **独立代理** — `streaming-proxy.mjs` 可独立运行为 OpenAI 兼容 API（自动检测、API Key、CORS）
 - **可靠性** — 工具调用超时（60s）、重试（2 次）、结构化错误（`isError: true`）
 - **请求安全** — 请求体大小限制（10 MB）、单请求超时、客户端断连优雅处理
@@ -159,6 +161,7 @@ flowchart LR
 | `CURSOR_PROXY_FORWARD_THINKING` | `false`  | 将 LLM 推理过程转发为 `reasoning_content`             |
 | `CURSOR_PROXY_STREAM_SPEED`     | `200`    | 分块流式速度（字符/秒，仅 `INSTANT_RESULT=false` 时） |
 | `CURSOR_PROXY_REQUEST_TIMEOUT`  | `300000` | 单请求超时（毫秒，默认 5 分钟）                       |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `5` | 连续失败上限，超过后 proxy 自退出触发重启       |
 | `CURSOR_PROXY_API_KEY`          | _（无）_ | 独立模式 API Key 认证                                 |
 
 </details>

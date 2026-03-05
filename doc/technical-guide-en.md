@@ -467,25 +467,22 @@ The Streaming Proxy is an OpenAI-compatible HTTP server that wraps the cursor-ag
 |---|---|---|
 | `/v1/chat/completions` | POST | Chat completions (stream/non-stream) |
 | `/v1/models` | GET | List available models |
-| `/v1/health` | GET | Health check (includes `scriptHash`, `sessions` count) |
+| `/v1/health` | GET | Health check (includes `scriptHash`, `sessions`, `consecutiveFailures`, `lastErrorTime`, `lastErrorMsg`) |
 
 #### cursor-agent Process Management
 
 ```javascript
-// streaming-proxy.mjs L211-227
-function spawnCursorAgent(userMsg, sessionKey, requestModel) {
-  const args = [
-    "-p",
-    "--output-format", OUTPUT_FORMAT,
-    "--stream-partial-output",
-    "--trust", "--approve-mcps", "--force"
-  ];
+function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = false } = {}) {
+  const cursorSessionId = !skipSession && sessionKey ? sessions.get(sessionKey) : null;
+  const args = ["-p", "--output-format", OUTPUT_FORMAT, "--stream-partial-output",
+                "--trust", "--approve-mcps", "--force"];
   if (model) args.push("--model", model);
   if (cursorSessionId) args.push("--resume", cursorSessionId);
 
   const child = spawn(CURSOR_PATH, args, { ... });
   child.stdin.write(userMsg);
   child.stdin.end();
+  child._usedSession = !!cursorSessionId;
   return child;
 }
 ```
@@ -495,6 +492,29 @@ Key parameters:
 - `--stream-partial-output`: Enable incremental output
 - `--trust --approve-mcps --force`: Auto-trust MCP tool invocations
 - `--resume`: Reuse existing session
+- `skipSession`: Skip `--resume` on retry to avoid stale sessions causing persistent empty responses
+
+#### Three-Layer Fault Tolerance
+
+**Request-level: Session-aware retry**
+
+When cursor-agent returns an empty result while using a `--resume` session, the proxy automatically deletes the stale session and retries once with `skipSession=true`. Retry only occurs when no content has been streamed to the client yet, preventing duplicate output. Timeout-induced empty results do not trigger retry.
+
+**Process-level: Consecutive failure watchdog**
+
+The proxy tracks consecutive failures (`consecutiveFailures`). Resets to 0 on success, increments on failure. When the threshold is reached (default 5, configurable via `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES`), the proxy calls `process.exit(2)` to trigger gateway-level restart. `/v1/health` exposes `consecutiveFailures`, `lastErrorTime`, and `lastErrorMsg` for diagnostics.
+
+**Gateway-level: Crash auto-restart**
+
+`proxyChild.on("exit")` in `index.ts` implements exponential backoff restart for non-zero exits:
+
+| Exit code | Behavior |
+|---|---|
+| `0` / `null` | Normal exit (SIGTERM), no restart |
+| `2` | Self-healing exit (consecutive failures), restart after 2s |
+| Other | Crash, exponential backoff restart (2s → 10s → 60s) |
+| ≥3 consecutive crashes | Give up, log message suggests manual `proxy restart` |
+| Crash after >5min stable | Reset counter, treat as fresh round |
 
 #### Event Stream Processing
 
@@ -793,12 +813,26 @@ flowchart TD
     Wait --> Spawn["🔄 spawn node streaming-proxy.mjs<br/>inject CURSOR_PATH etc env vars"]
     Spawn --> Listen["✅ proxy listening :18790<br/>ready"]
 
+    Listen --> Running["🏃 Running"]
+    Running --> ExitEvent{"proxyChild.on(exit)<br/>exit code?"}
+    ExitEvent -->|"code=0 / null"| Done["✅ Normal exit<br/>no restart"]
+    ExitEvent -->|"code≠0"| CheckUptime{"uptime > 5min?"}
+    CheckUptime -->|"yes"| ResetCount["Reset restartCount=0"]
+    CheckUptime -->|"no"| CheckCount
+    ResetCount --> CheckCount{"restartCount<br/>≥ 3?"}
+    CheckCount -->|"yes"| GiveUp["❌ Give up<br/>log: manual proxy restart"]
+    CheckCount -->|"no"| AutoRestart["⏱️ Exponential backoff<br/>2s → 10s → 60s"]
+    AutoRestart --> Kill
+
     style GWStart fill:#0891b2,color:#fff
     style NeedStart fill:#ea580c,color:#fff
     style Kill fill:#dc2626,color:#fff
     style Spawn fill:#2563eb,color:#fff
     style Listen fill:#059669,color:#fff
     style UpToDate fill:#059669,color:#fff
+    style Done fill:#059669,color:#fff
+    style GiveUp fill:#dc2626,color:#fff
+    style AutoRestart fill:#f59e0b,color:#000
 ```
 
 ---
@@ -954,6 +988,7 @@ openclaw cursor-brain setup     # MCP config + model selection
 | `CURSOR_PROXY_INSTANT_RESULT` | `true` | Send batch results in one shot (no chunking) |
 | `CURSOR_PROXY_STREAM_SPEED` | `200` | Chunk speed (chars/s, only when INSTANT_RESULT=false) |
 | `CURSOR_PROXY_REQUEST_TIMEOUT` | `300000` | Per-request timeout (5 minutes) |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `5` | Consecutive failure threshold; proxy self-exits for restart when exceeded |
 
 ### 6.4 Plugin Configuration Schema
 
@@ -1142,6 +1177,10 @@ checks.push({
 | `DEFAULT_PROXY_PORT` | `18790` | Streaming Proxy default port |
 | `CANDIDATE_TTL_MS` | `60000` | Tool cache TTL (60 seconds) |
 | `MAX_SESSIONS` | `100` | Max persisted sessions |
+| `MAX_CONSECUTIVE_FAILURES` | `5` | Proxy self-exit threshold on consecutive failures |
+| `MAX_PROXY_RESTARTS` | `3` | Max gateway-level auto-restart attempts |
+| `PROXY_RESTART_DELAYS` | `[2s, 10s, 60s]` | Gateway-level restart exponential backoff delays |
+| `PROXY_STABLE_PERIOD` | `300000` (5min) | Stable uptime before restart counter resets |
 | `TOOL_TIMEOUT_MS` | `60000` | Tool invocation timeout (60 seconds) |
 | `TOOL_RETRY_COUNT` | `2` | Max tool invocation retries |
 | `TOOL_RETRY_DELAY_MS` | `1000` | Retry interval (1 second) |
