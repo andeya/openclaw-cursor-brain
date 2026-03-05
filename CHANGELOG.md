@@ -5,12 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.3] - 2026-03-05
+## [1.3.4] - 2026-03-05
 
 ### Added
 
 - Version display in CLI commands: `setup` shows current version in title, `upgrade` shows old → new version transition, `uninstall` shows version being removed
-- Read source version from `package.json` during `upgrade` to show `(vOld → vNew)` in intro
+- Extract `readPackageVersion()` helper to eliminate duplicated version-reading code
+
+### Fixed
+
+- `upgrade` with npm spec (e.g. `openclaw-cursor-brain`): source version displayed as `vunknown`; now gracefully falls back to showing the source name instead
 
 ### Changed
 

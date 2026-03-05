@@ -505,8 +505,11 @@ const plugin = {
 
           const oldVersion = readPackageVersion(pluginDir);
           const sourceVersion = readPackageVersion(source);
+          const versionHint = sourceVersion !== "unknown"
+            ? `v${oldVersion} → v${sourceVersion}`
+            : `v${oldVersion} → ${source}`;
 
-          clack.intro(`Cursor Brain Upgrade (v${oldVersion} → v${sourceVersion})`);
+          clack.intro(`Cursor Brain Upgrade (${versionHint})`);
 
           const s = clack.spinner();
           s.start("Removing old plugin...");
