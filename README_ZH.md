@@ -25,9 +25,8 @@
 ## 快速开始
 
 ```bash
-openclaw plugins install openclaw-cursor-brain
-openclaw cursor-brain setup     # 交互选择模型
-openclaw gateway restart
+openclaw plugins install openclaw-cursor-brain # 安装与配置
+openclaw gateway restart # 重启服务
 openclaw cursor-brain doctor    # 验证
 ```
 
@@ -140,43 +139,43 @@ flowchart LR
 
 在 `openclaw.json` 的 `plugins.entries.openclaw-cursor-brain.config` 下：
 
-| 参数 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `cursorPath` | string | 自动探测 | cursor-agent 路径 |
-| `model` | string | 交互选择 | 主模型（设置后跳过交互选择） |
-| `fallbackModel` | string | 交互选择 | 备用模型覆盖（交互选择支持有序多选） |
-| `cursorModel` | string | `""` (auto) | 直接传递给 `cursor-agent --model`（如 `sonnet-4.6`、`opus-4.6-thinking`） |
-| `outputFormat` | string | 自动探测 | `"stream-json"` 或 `"json"` |
-| `proxyPort` | number | `18790` | Streaming proxy 端口 |
+| 参数            | 类型   | 默认值      | 说明                                                                      |
+| --------------- | ------ | ----------- | ------------------------------------------------------------------------- |
+| `cursorPath`    | string | 自动探测    | cursor-agent 路径                                                         |
+| `model`         | string | 交互选择    | 主模型（设置后跳过交互选择）                                              |
+| `fallbackModel` | string | 交互选择    | 备用模型覆盖（交互选择支持有序多选）                                      |
+| `cursorModel`   | string | `""` (auto) | 直接传递给 `cursor-agent --model`（如 `sonnet-4.6`、`opus-4.6-thinking`） |
+| `outputFormat`  | string | 自动探测    | `"stream-json"` 或 `"json"`                                               |
+| `proxyPort`     | number | `18790`     | Streaming proxy 端口                                                      |
 
 <details>
 <summary><strong>环境变量</strong></summary>
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `OPENCLAW_TOOL_TIMEOUT_MS` | `60000` | 工具调用超时（毫秒） |
-| `OPENCLAW_TOOL_RETRY_COUNT` | `2` | 瞬态错误重试次数 |
-| `CURSOR_PROXY_INSTANT_RESULT` | `true` | 批量结果即时发送（不分块模拟流式） |
-| `CURSOR_PROXY_FORWARD_THINKING` | `false` | 将 LLM 推理过程转发为 `reasoning_content` |
-| `CURSOR_PROXY_STREAM_SPEED` | `200` | 分块流式速度（字符/秒，仅 `INSTANT_RESULT=false` 时） |
-| `CURSOR_PROXY_REQUEST_TIMEOUT` | `300000` | 单请求超时（毫秒，默认 5 分钟） |
-| `CURSOR_PROXY_API_KEY` | *（无）* | 独立模式 API Key 认证 |
+| 变量                            | 默认值   | 说明                                                  |
+| ------------------------------- | -------- | ----------------------------------------------------- |
+| `OPENCLAW_TOOL_TIMEOUT_MS`      | `60000`  | 工具调用超时（毫秒）                                  |
+| `OPENCLAW_TOOL_RETRY_COUNT`     | `2`      | 瞬态错误重试次数                                      |
+| `CURSOR_PROXY_INSTANT_RESULT`   | `true`   | 批量结果即时发送（不分块模拟流式）                    |
+| `CURSOR_PROXY_FORWARD_THINKING` | `false`  | 将 LLM 推理过程转发为 `reasoning_content`             |
+| `CURSOR_PROXY_STREAM_SPEED`     | `200`    | 分块流式速度（字符/秒，仅 `INSTANT_RESULT=false` 时） |
+| `CURSOR_PROXY_REQUEST_TIMEOUT`  | `300000` | 单请求超时（毫秒，默认 5 分钟）                       |
+| `CURSOR_PROXY_API_KEY`          | _（无）_ | 独立模式 API Key 认证                                 |
 
 </details>
 
 ## CLI 命令
 
-| 命令 | 说明 |
-|---|---|
-| `openclaw cursor-brain setup` | 配置 MCP + 交互选择模型 |
-| `openclaw cursor-brain doctor` | 健康检查（10+ 项） |
-| `openclaw cursor-brain status` | 版本、配置、模型、工具数量 |
-| `openclaw cursor-brain upgrade <source>` | 一键升级 + 模型选择 |
-| `openclaw cursor-brain uninstall` | 完整卸载（配置 + 文件） |
-| `openclaw cursor-brain proxy` | 显示代理状态（PID、端口、会话数） |
-| `openclaw cursor-brain proxy stop` | 停止流式代理 |
-| `openclaw cursor-brain proxy restart` | 重启代理（独立进程） |
-| `openclaw cursor-brain proxy log [-n N]` | 显示最近 N 行代理日志（默认 30） |
+| 命令                                     | 说明                              |
+| ---------------------------------------- | --------------------------------- |
+| `openclaw cursor-brain setup`            | 配置 MCP + 交互选择模型           |
+| `openclaw cursor-brain doctor`           | 健康检查（10+ 项）                |
+| `openclaw cursor-brain status`           | 版本、配置、模型、工具数量        |
+| `openclaw cursor-brain upgrade <source>` | 一键升级 + 模型选择               |
+| `openclaw cursor-brain uninstall`        | 完整卸载（配置 + 文件）           |
+| `openclaw cursor-brain proxy`            | 显示代理状态（PID、端口、会话数） |
+| `openclaw cursor-brain proxy stop`       | 停止流式代理                      |
+| `openclaw cursor-brain proxy restart`    | 重启代理（独立进程）              |
+| `openclaw cursor-brain proxy log [-n N]` | 显示最近 N 行代理日志（默认 30）  |
 
 ## 独立 Streaming Proxy
 
@@ -235,8 +234,8 @@ curl http://127.0.0.1:18790/v1/chat/completions \
         "baseUrl": "http://127.0.0.1:18790/v1",
         "apiKey": "local",
         "models": [
-          {"id": "auto", "name": "Auto"},
-          {"id": "opus-4.6", "name": "Claude 4.6 Opus"},
+          { "id": "auto", "name": "Auto" },
+          { "id": "opus-4.6", "name": "Claude 4.6 Opus" },
           "..."
         ]
       }
@@ -250,19 +249,19 @@ curl http://127.0.0.1:18790/v1/chat/completions \
 <details>
 <summary><strong>故障排查</strong></summary>
 
-| 问题 | 解决 |
-|---|---|
-| "Cursor Agent CLI not found" | 安装 Cursor 并运行一次，或设置 `config.cursorPath` |
-| Gateway 错误 | 确认 Gateway 运行中（`openclaw gateway status`），检查 token |
-| 工具未出现 | 重启 Gateway，在 Cursor 中调用 `openclaw_discover` |
-| 工具超时 | 设置 `OPENCLAW_TOOL_TIMEOUT_MS=120000` |
-| Proxy 未启动 | `openclaw cursor-brain proxy log` 查看日志；`proxy restart` 强制启动 |
-| 升级后 Proxy 未更新 | Gateway 自动检测 `scriptHash` 变化并重启；用 `curl http://127.0.0.1:18790/v1/health` 验证 |
-| 消息间上下文丢失 | 查看 `cursor-proxy.log` 中 `session=auto:dm:…(meta.auto)` — 若为 `none(none)` 说明消息中未嵌入元数据 |
-| 重启后上下文丢失 | 会话已自动持久化；用 `proxy restart`（而非 `gateway restart`）可保留会话 |
-| 批量响应延迟 | `CURSOR_PROXY_INSTANT_RESULT` 默认 `true`；若设为 `false` 则按 ~200 字符/秒分块 |
-| 调试工具调用 | 查看 `~/.openclaw/cursor-proxy.log` 中 `tool:start` / `tool:done` 条目 |
-| 调试 MCP | `OPENCLAW_GATEWAY_URL=... node mcp-server/server.mjs` |
+| 问题                         | 解决                                                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| "Cursor Agent CLI not found" | 安装 Cursor 并运行一次，或设置 `config.cursorPath`                                                   |
+| Gateway 错误                 | 确认 Gateway 运行中（`openclaw gateway status`），检查 token                                         |
+| 工具未出现                   | 重启 Gateway，在 Cursor 中调用 `openclaw_discover`                                                   |
+| 工具超时                     | 设置 `OPENCLAW_TOOL_TIMEOUT_MS=120000`                                                               |
+| Proxy 未启动                 | `openclaw cursor-brain proxy log` 查看日志；`proxy restart` 强制启动                                 |
+| 升级后 Proxy 未更新          | Gateway 自动检测 `scriptHash` 变化并重启；用 `curl http://127.0.0.1:18790/v1/health` 验证            |
+| 消息间上下文丢失             | 查看 `cursor-proxy.log` 中 `session=auto:dm:…(meta.auto)` — 若为 `none(none)` 说明消息中未嵌入元数据 |
+| 重启后上下文丢失             | 会话已自动持久化；用 `proxy restart`（而非 `gateway restart`）可保留会话                             |
+| 批量响应延迟                 | `CURSOR_PROXY_INSTANT_RESULT` 默认 `true`；若设为 `false` 则按 ~200 字符/秒分块                      |
+| 调试工具调用                 | 查看 `~/.openclaw/cursor-proxy.log` 中 `tool:start` / `tool:done` 条目                               |
+| 调试 MCP                     | `OPENCLAW_GATEWAY_URL=... node mcp-server/server.mjs`                                                |
 
 </details>
 

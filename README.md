@@ -25,10 +25,9 @@
 ## Quick Start
 
 ```bash
-openclaw plugins install openclaw-cursor-brain
-openclaw cursor-brain setup     # interactive model selection
-openclaw gateway restart
-openclaw cursor-brain doctor    # verify
+openclaw plugins install openclaw-cursor-brain # install & configure
+openclaw gateway restart                       # restart gateway
+openclaw cursor-brain doctor                   # verify
 ```
 
 During **setup** (and **upgrade**), models are dynamically discovered from `cursor-agent --list-models`. Primary is single-select; fallbacks are multi-select (space to toggle), defaulting to all models in cursor's original order:

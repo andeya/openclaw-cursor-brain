@@ -906,12 +906,17 @@ openclaw plugins install /path/to/openclaw-cursor-brain
 openclaw plugins install openclaw-cursor-brain-1.2.0.tgz
 ```
 
-安装后运行交互式配置：
+安装后重启 Gateway 并验证：
+
+```bash
+openclaw gateway restart         # 应用更改
+openclaw cursor-brain doctor     # 验证
+```
+
+如需重新交互式选择模型，可随时运行：
 
 ```bash
 openclaw cursor-brain setup     # MCP 配置 + 模型选择
-openclaw gateway restart         # 应用更改
-openclaw cursor-brain doctor     # 验证
 ```
 
 ### 6.2 自动配置的文件

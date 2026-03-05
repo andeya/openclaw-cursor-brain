@@ -906,12 +906,17 @@ openclaw plugins install /path/to/openclaw-cursor-brain
 openclaw plugins install openclaw-cursor-brain-1.2.0.tgz
 ```
 
-After installation, run interactive setup:
+After installation, restart the gateway and verify:
+
+```bash
+openclaw gateway restart         # Apply changes
+openclaw cursor-brain doctor     # Verify
+```
+
+To re-run interactive model selection at any time:
 
 ```bash
 openclaw cursor-brain setup     # MCP config + model selection
-openclaw gateway restart         # Apply changes
-openclaw cursor-brain doctor     # Verify
 ```
 
 ### 6.2 Auto-Configured Files

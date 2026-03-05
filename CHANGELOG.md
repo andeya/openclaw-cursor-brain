@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-03-05
+
+### Added
+
+- Version display in CLI commands: `setup` shows current version in title, `upgrade` shows old → new version transition, `uninstall` shows version being removed
+- Read source version from `package.json` during `upgrade` to show `(vOld → vNew)` in intro
+
+### Changed
+
+- Quick start in README (EN/ZH): removed separate `setup` step since `openclaw plugins install` auto-configures
+- Technical guide (EN/ZH) §6.1: installation instructions no longer require a separate `setup` run; added note that `setup` can be re-run to change model selection
+
 ## [1.3.1] - 2026-03-05
 
 ### Fixed

@@ -69,6 +69,12 @@ function computeFileHash(filePath: string): string {
   } catch { return "unknown"; }
 }
 
+function readPackageVersion(dir: string): string {
+  try {
+    return JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")).version || "unknown";
+  } catch { return "unknown"; }
+}
+
 function startProxy(opts: { pluginDir: string; cursorPath: string; workspaceDir: string; port: number; outputFormat: OutputFormat; cursorModel: string; logger: any }) {
   const proxyScript = join(opts.pluginDir, "mcp-server", "streaming-proxy.mjs");
   if (!existsSync(proxyScript)) return;
@@ -340,7 +346,7 @@ const plugin = {
         .description("Run or re-run MCP server configuration")
         .action(async () => {
           const clack = loadClack();
-          clack.intro("Cursor Brain Setup");
+          clack.intro(`Cursor Brain Setup (v${readPackageVersion(pluginDir)})`);
 
           const s = clack.spinner();
           s.start("Configuring MCP server...");
@@ -402,11 +408,7 @@ const plugin = {
           const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
           const model = (config.agents as any)?.defaults?.model;
 
-          let pluginVersion = "unknown";
-          try {
-            const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf-8"));
-            pluginVersion = pkg.version || "unknown";
-          } catch { /* ignore */ }
+          const pluginVersion = readPackageVersion(pluginDir);
 
           let cursorVersion = "unknown";
           if (cursorPath) {
@@ -451,9 +453,9 @@ const plugin = {
         .command("uninstall")
         .description("Clean up configurations and remove the plugin completely")
         .action(() => {
-          console.log("Cursor Brain Uninstall\n");
-
           const installPath = join(homedir(), ".openclaw", "extensions", PLUGIN_ID);
+
+          console.log(`Cursor Brain Uninstall (v${readPackageVersion(pluginDir)})\n`);
 
           console.log("[1/4] Removing plugin registration...");
           try {
@@ -498,9 +500,13 @@ const plugin = {
         .description("Upgrade plugin from a path, .tgz archive, or npm spec")
         .action(async (source: string) => {
           const clack = loadClack();
-          clack.intro("Cursor Brain Upgrade");
 
           const installPath = join(homedir(), ".openclaw", "extensions", PLUGIN_ID);
+
+          const oldVersion = readPackageVersion(pluginDir);
+          const sourceVersion = readPackageVersion(source);
+
+          clack.intro(`Cursor Brain Upgrade (v${oldVersion} → v${sourceVersion})`);
 
           const s = clack.spinner();
           s.start("Removing old plugin...");
@@ -516,7 +522,7 @@ const plugin = {
             rmSync(installPath, { recursive: true, force: true });
           }
           runCleanup();
-          s.stop("Old plugin removed");
+          s.stop(`Old plugin removed (v${oldVersion})`);
 
           s.start(`Installing from ${source}...`);
           try {
@@ -535,7 +541,7 @@ const plugin = {
             process.exitCode = 1;
             return;
           }
-          s.stop("New version installed");
+          s.stop(`New version installed (v${readPackageVersion(installPath)})`);
 
           s.start("Discovering models...");
           const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
