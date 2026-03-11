@@ -60,34 +60,36 @@ During **setup** (and **upgrade**), models are dynamically discovered from `curs
 
 ## How It Works
 
+<img src="README-mermaid/Untitled-1.png" alt="Bidirectional Bridge Architecture" width="784" />
+
+<details>
+<summary>View diagram source</summary>
+
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Channels ["📱 Messaging Channels"]
-        direction TB
+        direction LR
         Feishu["Feishu"]
         Slack["Slack"]
         Web["Web / API"]
     end
 
-    subgraph Core ["🔄 Bidirectional Bridge"]
-        direction TB
-        GW["OpenClaw<br/>Gateway"]
+    GW["OpenClaw Gateway"]
 
+    subgraph Bridge ["🔄 Bidirectional Bridge"]
+        direction LR
         subgraph ProxyBox ["⚡ Streaming Proxy :18790"]
-            Proxy["OpenAI-compatible API<br/>• Session auto-derive<br/>• InstantResult<br/>• scriptHash auto-restart"]
+            Proxy["OpenAI-compatible API<br/>Session auto-derive<br/>InstantResult · scriptHash auto-restart"]
         end
-
         subgraph MCPBox ["🔌 MCP Server (stdio)"]
-            MCP["Tool Gateway<br/>• Rich descriptions<br/>• Timeout + retry<br/>• Auto-discovery"]
+            MCP["Tool Gateway<br/>Rich descriptions · Timeout + retry<br/>Auto-discovery"]
         end
     end
 
-    subgraph AI ["🧠 Cursor Agent"]
-        Agent["cursor-agent CLI<br/>--stream-partial-output<br/>--resume session"]
-    end
+    Agent["🧠 cursor-agent CLI<br/>--stream-partial-output --resume"]
 
     subgraph Tools ["🛠️ Plugin Tools"]
-        direction TB
+        direction LR
         T1["feishu_doc"]
         T2["feishu_wiki"]
         T3["GitHub · DB · …"]
@@ -104,11 +106,9 @@ flowchart LR
     MCP -->|"POST /tools/invoke"| GW
     GW --> Tools
 
-    style Proxy fill:#2563eb,color:#fff,stroke:#1d4ed8
-    style MCP fill:#7c3aed,color:#fff,stroke:#6d28d9
-    style Agent fill:#ea580c,color:#fff,stroke:#c2410c
-    style GW fill:#0891b2,color:#fff,stroke:#0e7490
 ```
+
+</details>
 
 Two auto-configured paths:
 

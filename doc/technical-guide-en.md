@@ -72,7 +72,7 @@ openclaw-cursor-brain/
 
 The core design of this project is a **bidirectional bridge** — two independent data paths that don't depend on each other, each solving a different directional problem:
 
-<img src="technical-guide-en-mermaid/Untitled-1.png" alt="Bidirectional Bridge Architecture" width="526" />
+<img src="technical-guide-en-mermaid/Untitled-1.png" alt="Bidirectional Bridge Architecture" width="991" />
 
 <details>
 <summary>View flowchart source</summary>
@@ -86,7 +86,7 @@ flowchart TD
         CH3["Web / Custom"]
     end
 
-    subgraph pathA ["Path A: OpenClaw to Cursor (AI Backend)"]
+    subgraph pathA ["Path A: OpenClaw → Cursor (AI Backend)"]
         GW_A["OpenClaw<br/>Gateway"]
         subgraph proxyDetail ["Streaming Proxy :18790"]
             API["OpenAI-Compatible API"]
@@ -96,7 +96,7 @@ flowchart TD
         Agent["cursor-agent<br/>-p --stream-partial-output<br/>--trust --approve-mcps"]
     end
 
-    subgraph pathB ["Path B: Cursor to OpenClaw (Tool Calls)"]
+    subgraph pathB ["Path B: Cursor → OpenClaw (Tool Calls)"]
         subgraph mcpDetail ["MCP Server stdio"]
             MCPCore["Tool Proxy + Retry"]
             SkillInst["Rich Instructions"]
@@ -106,7 +106,7 @@ flowchart TD
     end
 
     subgraph tools ["Plugin Ecosystem"]
-        direction LR
+        direction TB
         T1["feishu_doc<br/>feishu_wiki"]
         T2["GitHub<br/>Slack"]
         T3["Database<br/>Custom Plugins"]
@@ -121,7 +121,7 @@ flowchart TD
 
     Agent <-->|"MCP stdio CallTool"| MCPCore
     MCPCore -->|"POST /tools/invoke"| GW_B
-    GW_B --> tools
+    Agent ~~~ tools
 ```
 
 </details>
@@ -132,7 +132,7 @@ flowchart TD
 
 ### 2.2 Component Relationships
 
-<img src="technical-guide-en-mermaid/Untitled-2.png" alt="Component Relationships" width="1583" />
+<img src="technical-guide-en-mermaid/Untitled-2.png" alt="Component Relationships" width="1028" />
 
 <details>
 <summary>View flowchart source</summary>
@@ -158,12 +158,13 @@ flowchart TB
     end
 
     PluginEntry -->|"runSetup()"| Setup
-    PluginEntry -->|"startProxy()<br/>scriptHash check"| Proxy
     PluginEntry -->|"runDoctorChecks()"| Doctor
     PluginEntry -->|"runCleanup()"| Cleanup
+    PluginEntry -->|"startProxy()<br/>scriptHash check"| Proxy
+    Setup -->|"writes mcp.json"| MCPServer
     Proxy -->|"spawn per request"| AgentCLI
     MCPServer -->|"POST /tools/invoke"| GW
-    CursorIDE -->|"stdio launch"| MCPServer
+    MCPServer -->|"stdio (lifecycle managed by Cursor)"| CursorIDE
 ```
 
 </details>

@@ -72,7 +72,7 @@ openclaw-cursor-brain/
 
 本项目的核心设计是**双向桥接**——两条独立的数据通路互不依赖，各自解决一个方向的问题：
 
-<img src="technical-guide-zh-mermaid/Untitled-1.png" alt="双向桥接架构" width="526" />
+<img src="technical-guide-zh-mermaid/Untitled-1.png" alt="双向桥接架构" width="956" />
 
 <details>
 <summary>查看流程图源码</summary>
@@ -86,7 +86,7 @@ flowchart TD
         CH3["Web / 自定义"]
     end
 
-    subgraph pathA ["路径 A: OpenClaw 到 Cursor（AI 后端）"]
+    subgraph pathA ["路径 A: OpenClaw → Cursor（AI 后端）"]
         GW_A["OpenClaw<br/>Gateway"]
         subgraph proxyDetail ["Streaming Proxy :18790"]
             API["OpenAI 兼容 API"]
@@ -96,7 +96,7 @@ flowchart TD
         Agent["cursor-agent<br/>-p --stream-partial-output<br/>--trust --approve-mcps"]
     end
 
-    subgraph pathB ["路径 B: Cursor 到 OpenClaw（工具调用）"]
+    subgraph pathB ["路径 B: Cursor → OpenClaw（工具调用）"]
         subgraph mcpDetail ["MCP Server stdio"]
             MCPCore["工具代理 + 重试"]
             SkillInst["Rich Instructions"]
@@ -106,7 +106,7 @@ flowchart TD
     end
 
     subgraph tools ["插件生态"]
-        direction LR
+        direction TB
         T1["feishu_doc<br/>feishu_wiki"]
         T2["GitHub<br/>Slack"]
         T3["Database<br/>自定义插件"]
@@ -121,7 +121,7 @@ flowchart TD
 
     Agent <-->|"MCP stdio CallTool"| MCPCore
     MCPCore -->|"POST /tools/invoke"| GW_B
-    GW_B --> tools
+    Agent ~~~ tools
 ```
 
 </details>
@@ -132,7 +132,7 @@ flowchart TD
 
 ### 2.2 组件关系
 
-<img src="technical-guide-zh-mermaid/Untitled-2.png" alt="组件关系" width="1583" />
+<img src="technical-guide-zh-mermaid/Untitled-2.png" alt="组件关系" width="878" />
 
 <details>
 <summary>查看流程图源码</summary>
@@ -158,12 +158,13 @@ flowchart TB
     end
 
     PluginEntry -->|"runSetup()"| Setup
-    PluginEntry -->|"startProxy()<br/>scriptHash 检测"| Proxy
     PluginEntry -->|"runDoctorChecks()"| Doctor
     PluginEntry -->|"runCleanup()"| Cleanup
+    PluginEntry -->|"startProxy()<br/>scriptHash 检测"| Proxy
+    Setup -->|"写入 mcp.json"| MCPServer
     Proxy -->|"spawn per request"| AgentCLI
     MCPServer -->|"POST /tools/invoke"| GW
-    CursorIDE -->|"stdio 启动"| MCPServer
+    MCPServer -->|"stdio (Cursor 管理生命周期)"| CursorIDE
 ```
 
 </details>

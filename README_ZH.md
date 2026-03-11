@@ -60,34 +60,36 @@ openclaw cursor-brain doctor    # 验证
 
 ## 工作原理
 
+<img src="README_ZH-mermaid/Untitled-1.png" alt="双向桥接架构" width="746" />
+
+<details>
+<summary>查看流程图源码</summary>
+
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Channels ["📱 消息通道"]
-        direction TB
+        direction LR
         Feishu["飞书"]
         Slack["Slack"]
         Web["Web / API"]
     end
 
-    subgraph Core ["🔄 双向桥接"]
-        direction TB
-        GW["OpenClaw<br/>Gateway"]
+    GW["OpenClaw Gateway"]
 
+    subgraph Bridge ["🔄 双向桥接"]
+        direction LR
         subgraph ProxyBox ["⚡ Streaming Proxy :18790"]
-            Proxy["OpenAI 兼容 API<br/>• Session 自动推导<br/>• 即时结果<br/>• 脚本哈希自动重启"]
+            Proxy["OpenAI 兼容 API<br/>Session 自动推导<br/>即时结果 · 脚本哈希自动重启"]
         end
-
         subgraph MCPBox ["🔌 MCP Server (stdio)"]
-            MCP["工具网关<br/>• 丰富描述<br/>• 超时 + 重试<br/>• 自动发现"]
+            MCP["工具网关<br/>丰富描述 · 超时重试<br/>自动发现"]
         end
     end
 
-    subgraph AI ["🧠 Cursor Agent"]
-        Agent["cursor-agent CLI<br/>--stream-partial-output<br/>--resume session"]
-    end
+    Agent["🧠 cursor-agent CLI<br/>--stream-partial-output --resume"]
 
     subgraph Tools ["🛠️ 插件工具"]
-        direction TB
+        direction LR
         T1["feishu_doc"]
         T2["feishu_wiki"]
         T3["GitHub · DB · …"]
@@ -104,11 +106,9 @@ flowchart LR
     MCP -->|"POST /tools/invoke"| GW
     GW --> Tools
 
-    style Proxy fill:#2563eb,color:#fff,stroke:#1d4ed8
-    style MCP fill:#7c3aed,color:#fff,stroke:#6d28d9
-    style Agent fill:#ea580c,color:#fff,stroke:#c2410c
-    style GW fill:#0891b2,color:#fff,stroke:#0e7490
 ```
+
+</details>
 
 两条自动配置的路径：
 

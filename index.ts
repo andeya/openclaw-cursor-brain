@@ -159,6 +159,19 @@ function buildProviderConfig(port: number, cursorModels: CursorModel[]) {
   };
 }
 
+function autoSelectModels(
+  models: CursorModel[],
+  currentPrimary?: string,
+  currentFallbacks?: string[],
+): { primary: string; fallbacks: string[] } {
+  const defaultModel = models.find((m) => m.isDefault);
+  const primary = currentPrimary || defaultModel?.id || models[0].id;
+  const fallbacks = currentFallbacks?.length
+    ? currentFallbacks.filter((id) => id !== primary)
+    : models.filter((m) => m.id !== primary).map((m) => m.id);
+  return { primary, fallbacks };
+}
+
 async function promptModelSelection(
   models: CursorModel[],
   currentPrimary?: string,
@@ -169,43 +182,52 @@ async function promptModelSelection(
     return null;
   }
 
-  const clack = loadClack();
+  try {
+    const clack = loadClack();
 
-  const toOption = (m: CursorModel) => {
-    const tags: string[] = [];
-    if (m.reasoning) tags.push("thinking");
-    if (m.isDefault) tags.push("cursor default");
-    return { value: m.id, label: m.id, hint: `${m.name}${tags.length ? ` (${tags.join(", ")})` : ""}` };
-  };
-  const options = models.map(toOption);
+    const toOption = (m: CursorModel) => {
+      const tags: string[] = [];
+      if (m.reasoning) tags.push("thinking");
+      if (m.isDefault) tags.push("cursor default");
+      return { value: m.id, label: m.id, hint: `${m.name}${tags.length ? ` (${tags.join(", ")})` : ""}` };
+    };
+    const options = models.map(toOption);
 
-  const primary = await clack.select({
-    message: "Select primary model (↑↓ navigate, enter confirm)",
-    options,
-    initialValue: currentPrimary || models[0].id,
-    maxItems: 12,
-  });
-  if (clack.isCancel(primary)) { clack.cancel("Cancelled"); return null; }
+    const primary = await clack.select({
+      message: "Select primary model (↑↓ navigate, enter confirm)",
+      options,
+      initialValue: currentPrimary || models[0].id,
+      maxItems: 12,
+    });
+    if (clack.isCancel(primary)) { clack.cancel("Cancelled"); return null; }
 
-  const fallbackOptions = models.filter((m) => m.id !== primary).map(toOption);
-  const defaultFallbacks = currentFallbacks?.length
-    ? currentFallbacks.filter((id) => id !== primary)
-    : fallbackOptions.map((o) => o.value);
+    const fallbackOptions = models.filter((m) => m.id !== primary).map(toOption);
+    const defaultFallbacks = currentFallbacks?.length
+      ? currentFallbacks.filter((id) => id !== primary)
+      : fallbackOptions.map((o) => o.value);
 
-  const fallbacks = await clack.multiselect({
-    message: "Select fallback models (space toggle, enter confirm, order follows list)",
-    options: fallbackOptions,
-    initialValues: defaultFallbacks,
-    maxItems: 12,
-    required: false,
-  });
-  if (clack.isCancel(fallbacks)) { clack.cancel("Cancelled"); return null; }
+    const fallbacks = await clack.multiselect({
+      message: "Select fallback models (space toggle, enter confirm, order follows list)",
+      options: fallbackOptions,
+      initialValues: defaultFallbacks,
+      maxItems: 12,
+      required: false,
+    });
+    if (clack.isCancel(fallbacks)) { clack.cancel("Cancelled"); return null; }
 
-  const selectedFallbacks = fallbacks as string[];
-  clack.log.success(`Primary:   ${PROVIDER_ID}/${primary}`);
-  clack.log.success(`Fallbacks: ${selectedFallbacks.length ? selectedFallbacks.map((f) => `${PROVIDER_ID}/${f}`).join(" → ") : "none"}`);
+    const selectedFallbacks = fallbacks as string[];
+    clack.log.success(`Primary:   ${PROVIDER_ID}/${primary}`);
+    clack.log.success(`Fallbacks: ${selectedFallbacks.length ? selectedFallbacks.map((f) => `${PROVIDER_ID}/${f}`).join(" → ") : "none"}`);
 
-  return { primary: primary as string, fallbacks: selectedFallbacks };
+    return { primary: primary as string, fallbacks: selectedFallbacks };
+  } catch (err: any) {
+    console.log(`  ⚠ Interactive prompt failed (${err.code || err.message}), using defaults.`);
+    const result = autoSelectModels(models, currentPrimary, currentFallbacks);
+    console.log(`    Primary:   ${PROVIDER_ID}/${result.primary}`);
+    console.log(`    Fallbacks: ${result.fallbacks.length ? result.fallbacks.map((f) => `${PROVIDER_ID}/${f}`).join(" → ") : "none"}`);
+    console.log("    Run `openclaw cursor-brain setup` in an interactive terminal to choose manually.");
+    return result;
+  }
 }
 
 function saveModelSelection(primary: string, fallbacks: string[], proxyPort: number, models: CursorModel[]) {
@@ -550,16 +572,24 @@ const plugin = {
           if (sourceVersion !== "unknown" && oldVersion !== "unknown") {
             const cmp = compareSemver(sourceVersion, oldVersion);
             if (cmp < 0) {
-              const ok = await clack.confirm({ message: `Target version v${sourceVersion} is older than current v${oldVersion}. Downgrade anyway?` });
-              if (ok !== true) {
-                clack.log.info("Upgrade cancelled");
-                return;
+              try {
+                const ok = await clack.confirm({ message: `Target version v${sourceVersion} is older than current v${oldVersion}. Downgrade anyway?` });
+                if (ok !== true) {
+                  clack.log.info("Upgrade cancelled");
+                  return;
+                }
+              } catch {
+                clack.log.warn(`Target version v${sourceVersion} is older than current v${oldVersion}. Proceeding (non-interactive).`);
               }
             } else if (cmp === 0) {
-              const ok = await clack.confirm({ message: `Target version v${sourceVersion} is the same as current. Reinstall?` });
-              if (ok !== true) {
-                clack.log.info("Upgrade cancelled");
-                return;
+              try {
+                const ok = await clack.confirm({ message: `Target version v${sourceVersion} is the same as current. Reinstall?` });
+                if (ok !== true) {
+                  clack.log.info("Upgrade cancelled");
+                  return;
+                }
+              } catch {
+                clack.log.info(`Reinstalling v${sourceVersion} (non-interactive).`);
               }
             }
           }
