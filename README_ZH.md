@@ -168,16 +168,19 @@ flowchart TD
 <details>
 <summary><strong>环境变量</strong></summary>
 
-| 变量                                    | 默认值   | 说明                                                  |
-| --------------------------------------- | -------- | ----------------------------------------------------- |
-| `OPENCLAW_TOOL_TIMEOUT_MS`              | `60000`  | 工具调用超时（毫秒）                                  |
-| `OPENCLAW_TOOL_RETRY_COUNT`             | `2`      | 瞬态错误重试次数                                      |
-| `CURSOR_PROXY_INSTANT_RESULT`           | `true`   | 批量结果即时发送（不分块模拟流式）                    |
-| `CURSOR_PROXY_FORWARD_THINKING`         | `false`  | 将 LLM 推理过程转发为 `reasoning_content`             |
-| `CURSOR_PROXY_STREAM_SPEED`             | `200`    | 分块流式速度（字符/秒，仅 `INSTANT_RESULT=false` 时） |
-| `CURSOR_PROXY_REQUEST_TIMEOUT`          | `300000` | 单请求超时（毫秒，默认 5 分钟）                       |
-| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `5`      | 连续失败上限，超过后 proxy 自退出触发重启             |
-| `CURSOR_PROXY_API_KEY`                  | _（无）_ | 独立模式 API Key 认证                                 |
+| 变量                                    | 默认值   | 说明                                                                      |
+| --------------------------------------- | -------- | ------------------------------------------------------------------------- |
+| `OPENCLAW_TOOL_TIMEOUT_MS`              | `60000`  | 工具调用超时（毫秒）                                                      |
+| `OPENCLAW_TOOL_RETRY_COUNT`             | `2`      | 瞬态错误重试次数                                                          |
+| `CURSOR_PROXY_INSTANT_RESULT`           | `true`   | 批量结果即时发送（不分块模拟流式）                                        |
+| `CURSOR_PROXY_FORWARD_THINKING`         | `false`  | 将 LLM 推理过程转发为 `reasoning_content`                                 |
+| `CURSOR_PROXY_STREAM_SPEED`             | `200`    | 分块流式速度（字符/秒，仅 `INSTANT_RESULT=false` 时）                     |
+| `CURSOR_PROXY_REQUEST_TIMEOUT`          | `300000` | 单请求超时（毫秒，5 分钟）。小于 60000 或无效时会钳制为 60000 或 300000。 |
+| `CURSOR_PROXY_DEGRADED_TIMEOUT`         | `300000` | 已处于降级状态时的超时（毫秒）。钳制规则同上。                            |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES` | `8`      | 连续失败上限，超过后 proxy 自退出触发重启                                 |
+| `CURSOR_PROXY_MAX_CONSECUTIVE_TIMEOUTS` | `5`      | 连续超时上限，超过后 proxy 自退出触发重启                                 |
+| `CURSOR_PROXY_STREAM_RESOLVE_GRACE_MS`  | `5000`   | 杀子进程后等待 stdout 关闭的最长时间（超时则返回 503）                    |
+| `CURSOR_PROXY_API_KEY`                  | _（无）_ | 独立模式 API Key 认证                                                     |
 
 </details>
 
@@ -280,12 +283,12 @@ curl http://127.0.0.1:18790/v1/chat/completions \
 | 工具未出现                                                   | 重启 Gateway，在 Cursor 中调用 `openclaw_discover`                                                                                                                                                                                                                                                                                                                                        |
 | 工具超时                                                     | 设置 `OPENCLAW_TOOL_TIMEOUT_MS=120000`                                                                                                                                                                                                                                                                                                                                                    |
 | Proxy 未启动                                                 | `openclaw cursor-brain proxy log` 查看日志；`proxy restart` 强制启动                                                                                                                                                                                                                                                                                                                      |
-| **Cursor 限速 / 504 超时 / proxy 频繁退出**                  | 限速时单次请求变慢，易触发 proxy 的「连续超时则退出重启」。新版已放宽默认：降级超时 3 分钟、连续 5 次超时或 8 次失败才退出。若仍 504，可设环境变量再放宽：`CURSOR_PROXY_DEGRADED_TIMEOUT=300000`（5 分钟）、`CURSOR_PROXY_MAX_CONSECUTIVE_TIMEOUTS=10`，然后 `openclaw gateway restart`。飞书等渠道有约 50–60 秒回复超时，若 Cursor 经常超过则需减少并发或等限速恢复。                    |
+| **Cursor 限速 / 504 超时 / proxy 频繁退出**                  | 限速时单次请求变慢。默认：请求超时 5 分钟、降级后仍 5 分钟；仅当连续失败 ≥4 或连续超时 ≥2 时 health 才报 degraded，Gateway 才会重启 proxy，避免一次超时就重启。非流式请求会累积 agent 的 text 输出，超时前已有内容会正常返回。飞书等渠道约 50–60 秒回复超时，若 Cursor 经常超过则需减少并发或等限速恢复。                                                                                 |
 | 升级后 Proxy 未更新                                          | Gateway 自动检测 `scriptHash` 变化并重启；用 `curl http://127.0.0.1:18790/v1/health` 验证                                                                                                                                                                                                                                                                                                 |
-| 消息间上下文丢失                                             | 查看 `cursor-proxy.log` 中 `session=auto:dm:…(meta.auto)` — 若为 `none(none)` 说明消息中未嵌入元数据                                                                                                                                                                                                                                                                                      |
+| 消息间上下文丢失                                             | 查看 `~/.openclaw/logs/cursor-proxy.log` 中 `session=auto:dm:…(meta.auto)` — 若为 `none(none)` 说明消息中未嵌入元数据                                                                                                                                                                                                                                                                     |
 | 重启后上下文丢失                                             | 会话已自动持久化；用 `proxy restart`（而非 `gateway restart`）可保留会话                                                                                                                                                                                                                                                                                                                  |
 | 批量响应延迟                                                 | `CURSOR_PROXY_INSTANT_RESULT` 默认 `true`；若设为 `false` 则按 ~200 字符/秒分块                                                                                                                                                                                                                                                                                                           |
-| 调试工具调用                                                 | 查看 `~/.openclaw/cursor-proxy.log` 中 `tool:start` / `tool:done` 条目                                                                                                                                                                                                                                                                                                                    |
+| 调试工具调用                                                 | 查看 `~/.openclaw/logs/cursor-proxy.log` 中 `tool:start` / `tool:done` 条目                                                                                                                                                                                                                                                                                                               |
 | 调试 MCP                                                     | `OPENCLAW_GATEWAY_URL=... node mcp-server/server.mjs`                                                                                                                                                                                                                                                                                                                                     |
 
 </details>

@@ -8,7 +8,10 @@ export const DEFAULT_PROXY_PORT = 18790;
 
 
 const OPENCLAW_HOME = join(homedir(), ".openclaw");
+export const OPENCLAW_LOGS_DIR = join(OPENCLAW_HOME, "logs");
 export const OPENCLAW_CONFIG_PATH = join(OPENCLAW_HOME, "openclaw.json");
+export const CURSOR_PROXY_LOG_PATH = join(OPENCLAW_LOGS_DIR, "cursor-proxy.log");
+export const CURSOR_PROXY_STDERR_LOG_PATH = join(OPENCLAW_LOGS_DIR, "cursor-proxy.stderr.log");
 
 export function getCursorMcpConfigPath(): string {
   return join(homedir(), ".cursor", "mcp.json");

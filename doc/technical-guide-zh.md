@@ -1007,12 +1007,12 @@ openclaw cursor-brain setup     # MCP 配置 + 模型选择
 
 ### 6.2 自动配置的文件
 
-| 文件                               | 写入时机               | 内容                     |
-| ---------------------------------- | ---------------------- | ------------------------ |
-| `~/.cursor/mcp.json`               | `setup` / `register()` | MCP Server 启动配置      |
-| `~/.openclaw/openclaw.json`        | `setup` / `register()` | Provider 配置 + 模型选择 |
-| `~/.openclaw/cursor-sessions.json` | proxy 运行时           | Session 持久化           |
-| `~/.openclaw/cursor-proxy.log`     | proxy 运行时           | Proxy 日志               |
+| 文件                                | 写入时机               | 内容                     |
+| ----------------------------------- | ---------------------- | ------------------------ |
+| `~/.cursor/mcp.json`                | `setup` / `register()` | MCP Server 启动配置      |
+| `~/.openclaw/openclaw.json`         | `setup` / `register()` | Provider 配置 + 模型选择 |
+| `~/.openclaw/cursor-sessions.json`  | proxy 运行时           | Session 持久化           |
+| `~/.openclaw/logs/cursor-proxy.log` | proxy 运行时           | Proxy 日志               |
 
 ### 6.3 环境变量完整参考
 
@@ -1157,7 +1157,7 @@ curl http://127.0.0.1:18790/v1/chat/completions \
 | Proxy 未启动               | `openclaw cursor-brain proxy log`       | `proxy restart` 强制启动                          |
 | 升级后 proxy 未更新        | `curl http://127.0.0.1:18790/v1/health` | 检查 `scriptHash`；`gateway restart` 触发自动重启 |
 | 批量响应延迟               | 检查 proxy 启动日志                     | 确认 `InstantResult: true`                        |
-| 调试工具调用               | `~/.openclaw/cursor-proxy.log`          | 搜索 `tool:start` / `tool:done`                   |
+| 调试工具调用               | `~/.openclaw/logs/cursor-proxy.log`     | 搜索 `tool:start` / `tool:done`                   |
 
 ---
 

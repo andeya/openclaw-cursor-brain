@@ -9,7 +9,7 @@ import { createRequire } from "module";
 import { runSetup, type SetupContext, type CursorModel, detectCursorPath, detectOutputFormat, discoverCursorModels } from "./src/setup.js";
 import { runDoctorChecks, formatDoctorResults, countDiscoveredTools } from "./src/doctor.js";
 import { runCleanup } from "./src/cleanup.js";
-import { PLUGIN_ID, PROVIDER_ID, DEFAULT_PROXY_PORT, OPENCLAW_CONFIG_PATH, getCursorMcpConfigPath, type OutputFormat } from "./src/constants.js";
+import { PLUGIN_ID, PROVIDER_ID, DEFAULT_PROXY_PORT, OPENCLAW_CONFIG_PATH, OPENCLAW_LOGS_DIR, CURSOR_PROXY_LOG_PATH, CURSOR_PROXY_STDERR_LOG_PATH, getCursorMcpConfigPath, type OutputFormat } from "./src/constants.js";
 
 let proxyChild: ReturnType<typeof spawn> | null = null;
 let proxyRestartCount = 0;
@@ -118,11 +118,11 @@ function startProxy(opts: { pluginDir: string; cursorPath: string; workspaceDir:
     if (!isProxyRunning(opts.port)) break;
   }
 
-  const proxyLogPath = join(homedir(), ".openclaw", "cursor-proxy.stderr.log");
+  try { mkdirSync(OPENCLAW_LOGS_DIR, { recursive: true }); } catch {}
   let stderrBuf = "";
   const appendProxyStderr = (chunk: string) => {
     stderrBuf = (stderrBuf + chunk).slice(-50_000);
-    try { appendFileSync(proxyLogPath, chunk); } catch {}
+    try { appendFileSync(CURSOR_PROXY_STDERR_LOG_PATH, chunk); } catch {}
   };
 
   const child = spawn("node", [proxyScript], {
@@ -1068,7 +1068,7 @@ const plugin = {
           console.log(`  Port:      ${proxyPort}`);
           if (pid) console.log(`  PID:       ${pid}`);
           if (sessions) console.log(`  Sessions:  ${sessions}`);
-          console.log(`  Log file:  ${join(homedir(), ".openclaw", "cursor-proxy.log")}`);
+          console.log(`  Log file:  ${CURSOR_PROXY_LOG_PATH}`);
         });
 
       proxyCmd
@@ -1135,9 +1135,9 @@ const plugin = {
         .description("Show recent proxy log entries")
         .option("-n, --lines <count>", "Number of lines to show", "30")
         .action((opts: { lines: string }) => {
-          const logPath = join(homedir(), ".openclaw", "cursor-proxy.log");
+          const logPath = CURSOR_PROXY_LOG_PATH;
           if (!existsSync(logPath)) {
-            console.log("No proxy log file found.");
+            console.log(`No proxy log file found at ${logPath}.`);
             return;
           }
           const n = Math.max(1, parseInt(opts.lines, 10) || 30);

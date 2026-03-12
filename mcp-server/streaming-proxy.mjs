@@ -36,8 +36,11 @@ const FORWARD_THINKING = process.env.CURSOR_PROXY_FORWARD_THINKING === "true";
 const INSTANT_RESULT = process.env.CURSOR_PROXY_INSTANT_RESULT !== "false";
 const TARGET_CHARS_PER_SEC = parseInt(process.env.CURSOR_PROXY_STREAM_SPEED || "200", 10);
 const SHORT_TEXT_THRESHOLD = 100;
-const REQUEST_TIMEOUT_MS = parseInt(process.env.CURSOR_PROXY_REQUEST_TIMEOUT || "300000", 10); // 5 min default
-const DEGRADED_TIMEOUT_MS = parseInt(process.env.CURSOR_PROXY_DEGRADED_TIMEOUT || "180000", 10); // 3 min when degraded (tolerate rate limit)
+const RAW_REQUEST_TIMEOUT_MS = parseInt(process.env.CURSOR_PROXY_REQUEST_TIMEOUT || "300000", 10); // 5 min default
+const RAW_DEGRADED_TIMEOUT_MS = parseInt(process.env.CURSOR_PROXY_DEGRADED_TIMEOUT || "300000", 10);
+const MIN_TIMEOUT_MS = 60_000; // avoid NaN or 0 killing agent before any output
+const REQUEST_TIMEOUT_MS = Number.isFinite(RAW_REQUEST_TIMEOUT_MS) && RAW_REQUEST_TIMEOUT_MS >= MIN_TIMEOUT_MS ? RAW_REQUEST_TIMEOUT_MS : 300000;
+const DEGRADED_TIMEOUT_MS = Number.isFinite(RAW_DEGRADED_TIMEOUT_MS) && RAW_DEGRADED_TIMEOUT_MS >= MIN_TIMEOUT_MS ? RAW_DEGRADED_TIMEOUT_MS : 300000;
 /** If child is killed but stdout never closes, resolve anyway after this grace period so we can send 503. */
 const STREAM_RESOLVE_GRACE_MS = parseInt(process.env.CURSOR_PROXY_STREAM_RESOLVE_GRACE_MS || "5000", 10);
 /** User-facing message when request/processing times out (always English). */
@@ -166,9 +169,11 @@ const cachedModels = discoverModels();
 // ── Persistent sessions ─────────────────────────────────────────────────────
 
 const OPENCLAW_DIR = join(homedir(), ".openclaw");
+const LOGS_DIR = join(OPENCLAW_DIR, "logs");
 const SESSIONS_FILE = join(OPENCLAW_DIR, "cursor-sessions.json");
-const LOG_FILE = join(OPENCLAW_DIR, "cursor-proxy.log");
+const LOG_FILE = join(LOGS_DIR, "cursor-proxy.log");
 const MAX_SESSIONS = 100;
+try { mkdirSync(LOGS_DIR, { recursive: true }); } catch {}
 
 function loadSessions() {
   try {
@@ -299,6 +304,7 @@ function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = fal
     shell: needsShell,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  // With -p (--print), agent reads the request prompt from stdin (script/non-interactive use)
   child.stdin.write(userMsg);
   child.stdin.end();
   child._stderrBuf = "";
@@ -499,6 +505,8 @@ async function handleStream(req, res, body) {
   }, effectiveTimeout);
 
   const streamState = { headersSent: false };
+  // Send 200 + SSE headers immediately so the client does not timeout waiting for first byte
+  ensureStreamHeaders(res, streamState);
 
   req.on("close", () => {
     clientGone = true;
@@ -518,6 +526,7 @@ async function handleStream(req, res, body) {
     const needsExit = recordFailure(result.error.message?.slice(0, 200));
     clearTimeout(timeout);
     const errMsg = result.error.message || "cursor-agent error";
+    log("info", `[${requestId}] 503 reason=error elapsed=${((Date.now() - startTime) / 1000).toFixed(1)}s error="${errMsg.replace(/"/g, "'")}"`);
     if (!streamState.headersSent) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: errMsg, code: "no_response" } }));
@@ -571,11 +580,12 @@ async function handleStream(req, res, body) {
     const stderrSnippet = child._stderrBuf?.trim().slice(0, 200);
     needsExit = timedOut ? recordTimeout() : recordFailure(stderrSnippet);
     const msg = timedOut ? TIMEOUT_MESSAGE : formatNoResponseMessage(stderrSnippet);
+    const reason = timedOut ? "timeout" : "empty";
+    log("info", `[${requestId}] 503 reason=${reason} elapsed=${(elapsed / 1000).toFixed(1)}s stderr="${(stderrSnippet || "").replace(/"/g, "'")}"`);
     if (!streamState.headersSent) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: msg, code: "no_response" } }));
       if (canRetry) log("warn", `[${requestId}] retry also returned empty`);
-      log("info", `[${requestId}] completed in ${(elapsed / 1000).toFixed(1)}s, 503 (no content, client may retry with fallback model)`);
       exitIfNeeded(needsExit);
       return;
     }
@@ -617,6 +627,7 @@ function collectNonStreamOutput(child, { requestId, sessionKey }) {
       if (resolved) return;
       resolved = true;
       let resultText = "";
+      let textAccum = "";
       let thinkingText = "";
       if (!error) {
         for (const line of stdout.split("\n")) {
@@ -636,11 +647,13 @@ function collectNonStreamOutput(child, { requestId, sessionKey }) {
               }
             }
             if (p.type === "result" && typeof p.result === "string") resultText = p.result;
+            if (p.type === "text" && typeof p.text === "string") textAccum += p.text;
             if (p.type === "thinking" && FORWARD_THINKING && p.text) thinkingText += p.text;
             if (p.session_id && sessionKey) setSession(sessionKey, p.session_id);
           } catch {}
         }
       }
+      if (!resultText && textAccum) resultText = textAccum;
       resolve({ resultText, thinkingText, error });
     };
 
@@ -726,8 +739,6 @@ async function handleNonStream(req, res, body) {
   }
 
   if (result.resultText) {
-    recordSuccess();
-    if (retried) log("info", `[${requestId}] retry succeeded`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -752,9 +763,11 @@ async function handleNonStream(req, res, body) {
     const stderrSnippet = child._stderrBuf?.trim().slice(0, 200);
     needsExit = timedOut ? recordTimeout() : recordFailure(stderrSnippet);
     const errMsg = timedOut ? TIMEOUT_MESSAGE : formatNoResponseMessage(stderrSnippet);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const reason = timedOut ? "timeout" : "empty";
+    log("info", `[${requestId}] 503 reason=${reason} elapsed=${elapsed}s stderr="${(stderrSnippet || "").replace(/"/g, "'")}"`);
     res.writeHead(503, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { message: errMsg, code: "no_response" } }));
-    log("info", `[${requestId}] completed in ${((Date.now() - startTime) / 1000).toFixed(1)}s, 503 (no content, client may retry with fallback model)`);
   }
   exitIfNeeded(needsExit);
 }
@@ -815,7 +828,7 @@ const server = http.createServer(async (req, res) => {
   if (!checkAuth(req, res)) return;
 
   if (req.method === "GET" && req.url === "/v1/health") {
-    const degraded = consecutiveTimeouts > 0 || consecutiveFailures >= 2;
+    const degraded = consecutiveFailures >= 4 || consecutiveTimeouts >= 2;
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ status: degraded ? "degraded" : "ok", cursor: !!CURSOR_PATH, port: PORT, sessions: sessions.size, scriptHash: SCRIPT_HASH, consecutiveFailures, consecutiveTimeouts, lastErrorTime, lastErrorMsg }));
   }
@@ -879,9 +892,9 @@ function gracefulShutdown(signal) {
     process.exit(0);
   });
   setTimeout(() => {
-    log("warn", "Graceful shutdown timed out after 10s, forcing exit.");
+    log("warn", "Graceful shutdown timed out after 30s, forcing exit.");
     process.exit(1);
-  }, 10_000).unref();
+  }, 30_000).unref();
 }
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));

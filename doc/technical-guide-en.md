@@ -1007,12 +1007,12 @@ openclaw cursor-brain setup     # MCP config + model selection
 
 ### 6.2 Auto-Configured Files
 
-| File                               | Write Timing           | Content                           |
-| ---------------------------------- | ---------------------- | --------------------------------- |
-| `~/.cursor/mcp.json`               | `setup` / `register()` | MCP Server startup config         |
-| `~/.openclaw/openclaw.json`        | `setup` / `register()` | Provider config + model selection |
-| `~/.openclaw/cursor-sessions.json` | Proxy runtime          | Session persistence               |
-| `~/.openclaw/cursor-proxy.log`     | Proxy runtime          | Proxy logs                        |
+| File                                | Write Timing           | Content                           |
+| ----------------------------------- | ---------------------- | --------------------------------- |
+| `~/.cursor/mcp.json`                | `setup` / `register()` | MCP Server startup config         |
+| `~/.openclaw/openclaw.json`         | `setup` / `register()` | Provider config + model selection |
+| `~/.openclaw/cursor-sessions.json`  | Proxy runtime          | Session persistence               |
+| `~/.openclaw/logs/cursor-proxy.log` | Proxy runtime          | Proxy logs                        |
 
 ### 6.3 Complete Environment Variable Reference
 
@@ -1157,7 +1157,7 @@ curl http://127.0.0.1:18790/v1/chat/completions \
 | Proxy not started               | `openclaw cursor-brain proxy log`       | `proxy restart` to force start                              |
 | Proxy not updated after upgrade | `curl http://127.0.0.1:18790/v1/health` | Check `scriptHash`; `gateway restart` triggers auto-restart |
 | Batch response latency          | Check proxy startup log                 | Confirm `InstantResult: true`                               |
-| Debug tool calls                | `~/.openclaw/cursor-proxy.log`          | Search for `tool:start` / `tool:done`                       |
+| Debug tool calls                | `~/.openclaw/logs/cursor-proxy.log`     | Search for `tool:start` / `tool:done`                       |
 
 ---
 
