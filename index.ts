@@ -535,6 +535,60 @@ function saveModelSelection(primary: string, fallbacks: string[], proxyPort: num
 const VALID_SOURCES = ["npm", "archive", "path"] as const;
 
 /**
+ * Remove this plugin from openclaw.json (entries, installs, allow; provider + model refs).
+ * Used after "openclaw plugins uninstall" during upgrade — core deletes the extension dir
+ * so we cannot run uninstall.mjs; this inline cleanup makes config valid for "plugins install".
+ */
+function removePluginFromOpenClawConfig(): boolean {
+  try {
+    if (!existsSync(OPENCLAW_CONFIG_PATH)) return false;
+    const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")) as Record<string, any>;
+    const plugins = cfg.plugins || {};
+    let changed = false;
+    if (plugins.entries?.[PLUGIN_ID]) {
+      delete plugins.entries[PLUGIN_ID];
+      changed = true;
+    }
+    if (plugins.installs?.[PLUGIN_ID]) {
+      delete plugins.installs[PLUGIN_ID];
+      changed = true;
+    }
+    if (Array.isArray(plugins.allow)) {
+      const idx = plugins.allow.indexOf(PLUGIN_ID);
+      if (idx !== -1) {
+        plugins.allow.splice(idx, 1);
+        changed = true;
+      }
+    }
+    const prefix = `${PROVIDER_ID}/`;
+    const defaults = cfg.agents?.defaults;
+    if (defaults?.model) {
+      if ((defaults.model.primary || "").toString().startsWith(prefix)) {
+        delete defaults.model.primary;
+        changed = true;
+      }
+      if (defaults.model.fallbacks && Array.isArray(defaults.model.fallbacks)) {
+        const cleaned = defaults.model.fallbacks.filter((f: string) => !f.startsWith(prefix));
+        if (cleaned.length !== defaults.model.fallbacks.length) {
+          defaults.model.fallbacks = cleaned.length ? cleaned : undefined;
+          changed = true;
+        }
+      }
+      if (!defaults.model.primary && !defaults.model.fallbacks) delete defaults.model;
+    }
+    if (cfg.models?.providers?.[PROVIDER_ID]) {
+      delete cfg.models.providers[PROVIDER_ID];
+      if (Object.keys(cfg.models.providers || {}).length === 0) delete cfg.models.providers;
+      changed = true;
+    }
+    if (changed) writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Re-read openclaw.json and fix plugins.installs[PLUGIN_ID].source to a valid
  * value (or re-add the record if missing after core overwrite). Called from
  * setImmediate after install so we run after core may have written invalid source.
@@ -1142,31 +1196,9 @@ const plugin = {
           if (existsSync(installPath)) {
             rmSync(installPath, { recursive: true, force: true });
           }
-          try {
-            execSync(`node "${join(pluginDir, "scripts", "uninstall.mjs")}" --config-only`, {
-              encoding: "utf-8",
-              stdio: "pipe",
-              timeout: 15000,
-            });
-          } catch (e: any) {
-            const msg = e?.stderr || e?.stdout || e?.message;
-            if (msg) clack.log.warn(`Config cleanup (after uninstall): ${String(msg).slice(0, 200)}`);
-          }
-          // Ensure config is valid before install: core uninstall may leave plugins.allow referencing the plugin.
-          // Run cleanup again (while plugin dir still exists) so "openclaw plugins install" does not see "plugin not found".
-          try {
-            execSync(`node "${join(pluginDir, "scripts", "uninstall.mjs")}" --config-only`, {
-              encoding: "utf-8",
-              stdio: "pipe",
-              timeout: 15000,
-            });
-          } catch (e: any) {
-            const msg = e?.stderr || e?.stdout || e?.message;
-            if (msg) clack.log.warn(`Pre-install config cleanup: ${String(msg).slice(0, 200)}`);
-          }
-          if (existsSync(installPath)) {
-            rmSync(installPath, { recursive: true, force: true });
-          }
+          // Core uninstall deletes the extension dir, so uninstall.mjs is no longer available.
+          // Inline cleanup so config is valid for "openclaw plugins install" (no plugins.allow orphan).
+          removePluginFromOpenClawConfig();
           s.stop(`Old plugin removed (v${oldVersion})`);
 
           // Resolve source: only treat as path when source explicitly looks like one (./path, /abs, .tgz).
