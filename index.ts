@@ -1148,21 +1148,40 @@ const plugin = {
               stdio: "pipe",
               timeout: 15000,
             });
-          } catch {
-            // Script may exit 0 with nothing to remove
+          } catch (e: any) {
+            const msg = e?.stderr || e?.stdout || e?.message;
+            if (msg) clack.log.warn(`Config cleanup (after uninstall): ${String(msg).slice(0, 200)}`);
+          }
+          // Ensure config is valid before install: core uninstall may leave plugins.allow referencing the plugin.
+          // Run cleanup again (while plugin dir still exists) so "openclaw plugins install" does not see "plugin not found".
+          try {
+            execSync(`node "${join(pluginDir, "scripts", "uninstall.mjs")}" --config-only`, {
+              encoding: "utf-8",
+              stdio: "pipe",
+              timeout: 15000,
+            });
+          } catch (e: any) {
+            const msg = e?.stderr || e?.stdout || e?.message;
+            if (msg) clack.log.warn(`Pre-install config cleanup: ${String(msg).slice(0, 200)}`);
           }
           if (existsSync(installPath)) {
             rmSync(installPath, { recursive: true, force: true });
           }
           s.stop(`Old plugin removed (v${oldVersion})`);
 
-          // Resolve source path. Only use PWD for path-like source (e.g. "./"): during upgrade the host may have
-          // chdir'd to the plugin dir, so process.cwd() would be wrong. For npm specs (e.g. "openclaw-cursor-brain")
-          // we must not resolve with PWD, else resolve(PWD, "openclaw-cursor-brain") can equal installPath and trigger a false conflict.
-          const isPathLike = source.startsWith(".") || isAbsolute(source);
-          const baseDir = isPathLike ? (process.env.PWD || process.cwd()) : process.cwd();
+          // Resolve source: only treat as path when source explicitly looks like one (./path, /abs, .tgz).
+          // Bare names like "openclaw-cursor-brain" or "openclaw-cursor-brain@latest" are npm specs — do not
+          // resolve with cwd else a local dir with that name is wrongly used and install fails.
+          const looksLikePath =
+            source.startsWith(".") ||
+            isAbsolute(source) ||
+            source.includes("/") ||
+            source.includes("\\") ||
+            source.endsWith(".tgz") ||
+            source.endsWith(".tar.gz");
+          const baseDir = looksLikePath ? (process.env.PWD || process.cwd()) : process.cwd();
           let resolvedPath = isAbsolute(source) ? source : resolve(baseDir, source);
-          if (isPathLike && !isAbsolute(source) && resolvedPath === installPath) {
+          if (looksLikePath && !isAbsolute(source) && resolvedPath === installPath) {
             resolvedPath = resolve(process.cwd(), source);
             if (resolvedPath === installPath) {
               clack.log.error("Cannot resolve source: current directory appears to be the plugin dir. Use an absolute path: openclaw cursor-brain upgrade /path/to/openclaw-cursor-brain");
@@ -1171,11 +1190,12 @@ const plugin = {
             }
             clack.log.warn(`Using PWD (${baseDir}) to resolve "${source}"; process.cwd() was the plugin dir.`);
           }
-          const isLocalPath =
+          const isLocalPath = looksLikePath && (
             isAbsolute(source) ||
             source.startsWith(".") ||
             existsSync(resolvedPath) ||
-            existsSync(join(resolvedPath, "package.json"));
+            existsSync(join(resolvedPath, "package.json"))
+          );
           const installSource = isLocalPath ? resolvedPath : source;
           const installArg = isLocalPath ? `"${installSource.replace(/"/g, '\\"')}"` : installSource;
 
