@@ -29,10 +29,28 @@ const cursorMcpPath =
   join(homedir(), ".cursor", "mcp.json");
 const cursorProxyPath =
   join(homedir(), ".openclaw", "cursor-proxy.json");
+const cursorProxyPidPath =
+  join(homedir(), ".openclaw", "cursor-proxy.pid");
 
 let hasError = false;
 
-function killPortProcess(port) {
+function portHasProcess(port) {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+        encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      return out.length > 0;
+    }
+    const out = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** @param signal "SIGTERM" | "SIGKILL" — use SIGKILL so proxy exits immediately and port is released. */
+function killPortProcess(port, signal = "SIGKILL") {
   try {
     if (process.platform === "win32") {
       const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
@@ -40,17 +58,17 @@ function killPortProcess(port) {
       }).trim();
       const pids = new Set(out.split("\n").map((l) => l.trim().split(/\s+/).pop()).filter(Boolean));
       for (const pid of pids) {
-        try { process.kill(Number(pid), "SIGTERM"); } catch {}
+        try { process.kill(Number(pid), signal); } catch { /* process may already be dead */ }
       }
     } else {
       const out = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
       if (out) {
         for (const pid of out.split("\n")) {
-          try { process.kill(Number(pid), "SIGTERM"); } catch {}
+          try { process.kill(Number(pid), signal); } catch { /* process may already be dead */ }
         }
       }
     }
-  } catch {}
+  } catch { /* lsof or kill failed, continue */ }
 }
 
 const log = (msg) => console.log(msg);
@@ -75,8 +93,17 @@ if (existsSync(configPath)) {
 // ── 0. Kill proxy process and remove cursor-proxy.json (skip when --config-only) ─
 let proxyRemoved = false;
 if (!configOnly) {
-  const proxyPort = Math.floor(Number(cfg?.plugins?.entries?.[PLUGIN_ID]?.config?.proxyPort)) || 18790;
-  killPortProcess(proxyPort);
+  let proxyPort = Math.floor(Number(cfg?.plugins?.entries?.[PLUGIN_ID]?.config?.proxyPort)) || 18790;
+  proxyPort = Math.min(65535, Math.max(1, proxyPort));
+  killPortProcess(proxyPort, "SIGKILL");
+  const maxTries = 20;
+  for (let w = 0; w < maxTries; w++) {
+    if (!portHasProcess(proxyPort)) break;
+    try {
+      if (process.platform === "win32") execSync("timeout /t 1 /nobreak >nul", { stdio: "pipe" });
+      else execSync("sleep 1", { stdio: "pipe" });
+    } catch {}
+  }
   if (existsSync(cursorProxyPath)) {
     try {
       rmSync(cursorProxyPath);
@@ -85,6 +112,13 @@ if (!configOnly) {
     } catch (e) {
       logErr("Could not remove cursor-proxy.json: " + (e?.message ?? String(e)));
     }
+  }
+  try {
+    if (existsSync(cursorProxyPidPath)) rmSync(cursorProxyPidPath, { force: true });
+  } catch {}
+  if (!proxyRemoved) {
+    log("Stopped proxy (port " + proxyPort + ")");
+    proxyRemoved = true;
   }
 }
 
@@ -175,4 +209,4 @@ if (!configChanged && !mcpRemoved && !extensionRemoved && !proxyRemoved) {
 }
 
 if (hasError) process.exit(1);
-log("You can now run: openclaw plugins install ./");
+if (!configOnly) log("To reinstall later: openclaw plugins install <source>");

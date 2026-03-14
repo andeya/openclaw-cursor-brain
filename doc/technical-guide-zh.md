@@ -1048,19 +1048,19 @@ openclaw cursor-brain setup     # MCP 配置 + 模型选择
 
 在 `openclaw.json` 的 `plugins.entries.openclaw-cursor-brain.config` 下。主模型与备用列表不在此处，而在 `agents.defaults.model`（primary + fallbacks 数组）与 `models.providers.cursor-local`。
 
-| 字段                     | 类型                                                   | 默认值   | 说明                                                                                                           |
-| ------------------------ | ------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------- |
-| `cursorPath`             | string                                                 | 自动检测 | cursor-agent 二进制路径                                                                                        |
-| `outputFormat`           | `"stream-json"` \| `"json"`                            | 自动检测 | cursor-agent 输出格式                                                                                          |
-| `proxyPort`              | number                                                 | `18790`  | Proxy 监听端口                                                                                                 |
-| `requestTimeout`         | number                                                 | `300000` | 单请求超时（ms），proxy 从 openclaw.json 读取                                                                  |
-| `degradedTimeout`        | number                                                 | `300000` | 降级时超时（ms）                                                                                               |
-| `maxConsecutiveFailures` | number                                                 | `8`      | 连续失败上限，超过后 proxy 自退出                                                                              |
-| `maxConsecutiveTimeouts` | number                                                 | `5`      | 连续超时上限，超过后 proxy 自退出                                                                              |
-| `streamResolveGraceMs`   | number                                                 | `5000`   | 杀进程后等待 ms 再返回 503                                                                                     |
-| `instantResult`          | boolean                                                | `true`   | 批量结果即时发送                                                                                               |
-| `forwardThinking`        | 字符串 `"off"` \| `"content"` \| `"reasoning_content"` | `"off"`  | `off`：不转发；`reasoning_content`：以 reasoning_content 字段流式输出；`content`：以正文 markdown 引用流式输出 |
-| `streamSpeed`            | number                                                 | `200`    | 分块速度（字符/秒），instantResult=false 时                                                                    |
+| 字段                     | 类型                                                   | 默认值      | 说明                                                                                                           |
+| ------------------------ | ------------------------------------------------------ | ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `cursorPath`             | string                                                 | 自动检测    | cursor-agent 二进制路径                                                                                        |
+| `outputFormat`           | `"stream-json"` \| `"json"`                            | 自动检测    | cursor-agent 输出格式                                                                                          |
+| `proxyPort`              | number                                                 | `18790`     | Proxy 监听端口                                                                                                 |
+| `requestTimeout`         | number                                                 | `300000`    | 单请求超时（ms），proxy 从 openclaw.json 读取                                                                  |
+| `degradedTimeout`        | number                                                 | `300000`    | 降级时超时（ms）                                                                                               |
+| `maxConsecutiveFailures` | number                                                 | `8`         | 连续失败上限，超过后 proxy 自退出                                                                              |
+| `maxConsecutiveTimeouts` | number                                                 | `5`         | 连续超时上限，超过后 proxy 自退出                                                                              |
+| `streamResolveGraceMs`   | number                                                 | `5000`      | 杀进程后等待 ms 再返回 503                                                                                     |
+| `instantResult`          | boolean                                                | `true`      | 批量结果即时发送                                                                                               |
+| `forwardThinking`        | 字符串 `"off"` \| `"content"` \| `"reasoning_content"` | `"content"` | `off`：不转发；`content`：以正文 markdown 引用流式输出；`reasoning_content`：以 reasoning_content 字段流式输出 |
+| `streamSpeed`            | number                                                 | `200`       | 分块速度（字符/秒），instantResult=false 时                                                                    |
 
 ---
 
@@ -1214,14 +1214,14 @@ checks.push({
 
 ### 8.3 设计原则
 
-| 原则         | 含义                           | 实践                                                |
-| ------------ | ------------------------------ | --------------------------------------------------- |
-| **零配置**   | 安装即用，无需手动修改配置文件 | `register()` 自动检测、自动写入配置                 |
-| **幂等**     | 重复执行不产生副作用           | setup 写入前对比、cleanup 独立分层                  |
-| **跨平台**   | macOS、Linux、Windows 均支持   | `process.platform` 分支、path.join、双平台命令      |
-| **动态发现** | 不硬编码工具名                 | 源码扫描 + REST probe，新插件自动注册               |
-| **渐进增强** | 核心功能优先，高级功能可选     | FORWARD_THINKING 默认关、INSTANT_RESULT 默认开      |
-| **可观测**   | 充分的日志和诊断能力           | tool:start/done 日志、doctor 检查、session 来源标注 |
+| 原则         | 含义                           | 实践                                                 |
+| ------------ | ------------------------------ | ---------------------------------------------------- |
+| **零配置**   | 安装即用，无需手动修改配置文件 | `register()` 自动检测、自动写入配置                  |
+| **幂等**     | 重复执行不产生副作用           | setup 写入前对比、cleanup 独立分层                   |
+| **跨平台**   | macOS、Linux、Windows 均支持   | `process.platform` 分支、path.join、双平台命令       |
+| **动态发现** | 不硬编码工具名                 | 源码扫描 + REST probe，新插件自动注册                |
+| **渐进增强** | 核心功能优先，高级功能可选     | FORWARD_THINKING 默认 content、INSTANT_RESULT 默认开 |
+| **可观测**   | 充分的日志和诊断能力           | tool:start/done 日志、doctor 检查、session 来源标注  |
 
 ---
 

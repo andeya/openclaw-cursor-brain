@@ -2,6 +2,14 @@
 
 本文档梳理 OpenClaw Cursor Brain 插件在安装、卸载、升级时的执行顺序与注意点，便于排查问题和扩展逻辑。
 
+## 流程与代码对应关系（检查清单）
+
+| 流程          | 入口                                     | Proxy 处理                                                               | 配置/目录                                                                                                                                                        | 与代码位置                                        |
+| ------------- | ---------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| **install**   | `openclaw plugins install <source>`      | 不启动（`isPluginsInstall` 时跳过 startProxy）                           | 核心写扩展目录 → register 写 install/entries/allow、provider、model，setImmediate fixInstallRecordSourceOnDisk                                                   | index.ts register，949 行条件 `!isPluginsInstall` |
+| **uninstall** | `openclaw cursor-brain uninstall`        | uninstall.mjs：SIGKILL 占端口进程，轮询等端口释放 → 删 cursor-proxy.json | uninstall.mjs：清 openclaw.json(entries/installs/allow/provider/model) → 清 MCP → 删扩展目录；再 `openclaw plugins uninstall`                                    | index.ts 1117–1151；scripts/uninstall.mjs 全流程  |
+| **upgrade**   | `openclaw cursor-brain upgrade <source>` | 先杀 proxy；setup 后提示用户重启 gateway                                 | openclaw plugins uninstall → rmSync → removePluginFromOpenClawConfig() → openclaw plugins install → sync、恢复 config → cursor-brain setup；提示「重启 gateway」 | index.ts 1207–1400                                |
+
 ## 1. 安装 (install)
 
 ### 1.1 用户命令
@@ -62,13 +70,14 @@
 
 ### 2.2 方式 A：`openclaw cursor-brain uninstall`
 
-1. 插件已加载，执行 `cursor-brain uninstall` 子命令。
-2. 执行 **scripts/uninstall.mjs**（无 `--config-only`）
-   - 从 `openclaw.json` 移除 `plugins.entries`、`plugins.installs`、`plugins.allow` 中的本插件，以及 `models.providers["cursor-local"]` 和 `agents.defaults.model` 下所有 `cursor-local/*` 引用；
-   - 从 Cursor 的 `mcp.json` 移除本 MCP server；
-   - 删除扩展目录 `~/.openclaw/extensions/openclaw-cursor-brain`。
+1. 插件已加载（argv 含 `cursor-brain` 与 `uninstall` → register 内 isUninstalling，不跑 setup、不起 proxy），执行 `cursor-brain uninstall` 子命令。
+2. 执行 **scripts/uninstall.mjs**（无 `--config-only`），顺序固定：
+   - **0** 从 `openclaw.json` 读 `proxyPort`（默认 18790）→ `killPortProcess(port, "SIGKILL")` → 轮询等端口释放（最多约 20s）→ 若存在则删 `~/.openclaw/cursor-proxy.json`；
+   - **1** 从 `openclaw.json` 移除本插件（entries / installs / allow）、`models.providers["cursor-local"]`、`agents.defaults.model` 下所有 `cursor-local/*`；
+   - **2** 从 Cursor 的 `mcp.json` 移除本 MCP server；
+   - **3** 删除扩展目录 `~/.openclaw/extensions/openclaw-cursor-brain`。
 3. `execSync("openclaw plugins uninstall openclaw-cursor-brain", { input: "y\n", ... })`
-   - 子进程中 OpenClaw 核心从配置移除该插件（若脚本已清理则多为无操作）。
+   - 子进程中核心移除插件登记；扩展目录已在步骤 2 删除，核心侧多为无操作或再次尝试删目录。
 
 ### 2.3 方式 B：`openclaw plugins uninstall openclaw-cursor-brain`
 
@@ -84,14 +93,20 @@
 ### 3.2 执行顺序
 
 1. 插件已加载，argv 含 `cursor-brain` 与 `upgrade` → **isUninstalling === true**，register() 内不跑 setup/写配置/起 proxy，只注册 CLI。
-2. 用户执行 `cursor-brain upgrade <source>`：
+2. 用户执行 `cursor-brain upgrade <source>`（index.ts 1160–1352）：
+   - 从 openclaw.json 保存当前插件 config（用于升级后恢复）。
    - 版本比较与确认（可选交互）。
-   - `execSync("openclaw plugins uninstall openclaw-cursor-brain", { input: "y\n", ... })`，必要时再 `rmSync(installPath)`。
-   - 执行 **scripts/uninstall.mjs --config-only**，仅清理 openclaw.json（插件条目、provider、模型引用）与 MCP 配置，不删除扩展目录。
-   - `execSync("openclaw plugins install " + source, ...)`
-     - 子进程里会重新走「安装」流程，包括 register() 中的 source 修正、doSyncInstallRecord、setImmediate 的 fixInstallRecordSourceOnDisk 等。
-   - 安装完成后，在当前进程内调用 **syncPluginInstallRecord({ installPath, source, updateTimestamp: true })**，用正确的 source 再写一次 install 记录。
-   - 探测模型并可选交互选择主/备模型，写回 openclaw.json。
+   - **停止 proxy**：读 `proxyPort`（默认 18790）→ `killPortProcess(proxyPort, "SIGKILL")` → Atomics.wait 轮询端口释放（约 20×150ms）。
+   - **移除旧插件**：`execSync("openclaw plugins uninstall openclaw-cursor-brain", { input: "y\n", ... })`；若仍存在则 `rmSync(installPath)`。
+   - **不**执行 uninstall.mjs（扩展目录由核心 uninstall 或本流程 rmSync 删除）；**removePluginFromOpenClawConfig()** 内联清理 openclaw.json（entries、installs、allow、provider、模型引用），使后续 `plugins install` 不出现孤儿 allow 等。
+   - **安装新版本**：`execSync("openclaw plugins install " + source, ...)`，子进程内走完整安装流程（含 source 修正、fixInstallRecordSourceOnDisk）。
+   - **写回 install 记录**：syncPluginInstallRecord({ installPath, source, updateTimestamp: true })；若有保存的 config 则写回 openclaw.json。
+   - **后置配置**：`execSync("openclaw cursor-brain setup", ...)` 在新进程内做模型探测与可选交互。
+   - **提示**：setup 子进程会输出「Run `openclaw gateway restart` (or restart your gateway) to apply changes」；父进程仅输出「Upgrade complete.»，不再重复重启提示。
+   - 使用新配置前需重启 gateway，使 proxy 以新配置启动（install 后若 gateway 已重载可能已拉起旧配置的 proxy）。
+
+3. **升级后配置与默认值**  
+   升级会先把旧 config 写回磁盘，再执行 `openclaw cursor-brain setup`，并通过环境变量把旧 config 传给 setup 子进程。**交互时：先用旧值作为每项初始值，无旧值才用 schema 的 default**；用户可修改任意项；**用户最终提交的值会覆盖旧值写入 openclaw.json**（`mergePluginConfig` 以用户提交为 patch 覆盖 entry.config）。
 
 注意：`openclaw plugins upgrade openclaw-cursor-brain`（核心的 upgrade）不会设置 isUninstalling（因为 argv 不含 `cursor-brain` 子命令），因此 register() 会正常跑配置与 provider 写入，与「安装」行为一致。
 

@@ -1059,7 +1059,7 @@ Under `openclaw.json`'s `plugins.entries.openclaw-cursor-brain.config`. Primary 
 | `maxConsecutiveTimeouts` | number                                                 | `5`           | Consecutive timeout limit before proxy exit                                                                           |
 | `streamResolveGraceMs`   | number                                                 | `5000`        | Grace ms after kill before 503                                                                                        |
 | `instantResult`          | boolean                                                | `true`        | Send batch results instantly                                                                                          |
-| `forwardThinking`        | string `"off"` \| `"content"` \| `"reasoning_content"` | `"off"`       | `off`: drop; `reasoning_content`: stream as reasoning_content field; `content`: stream as markdown blockquote in body |
+| `forwardThinking`        | string `"off"` \| `"content"` \| `"reasoning_content"` | `"content"`   | `off`: drop; `content`: stream as markdown blockquote in body; `reasoning_content`: stream as reasoning_content field |
 | `streamSpeed`            | number                                                 | `200`         | Chunk speed (chars/s) when instantResult=false                                                                        |
 
 ---
@@ -1220,7 +1220,7 @@ checks.push({
 | **Idempotent**              | Repeated execution produces no side effects         | Setup compares before write, cleanup layers independently          |
 | **Cross-Platform**          | Supports macOS, Linux, Windows                      | `process.platform` branching, path.join, dual-platform commands    |
 | **Dynamic Discovery**       | No hardcoded tool names                             | Source scanning + REST probe, new plugins auto-register            |
-| **Progressive Enhancement** | Core features first, advanced features optional     | FORWARD_THINKING default off, INSTANT_RESULT default on            |
+| **Progressive Enhancement** | Core features first, advanced features optional     | FORWARD_THINKING default content, INSTANT_RESULT default on        |
 | **Observable**              | Sufficient logging and diagnostic capability        | tool:start/done logging, doctor checks, session source annotations |
 
 ---

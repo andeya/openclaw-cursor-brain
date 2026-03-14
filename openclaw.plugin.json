@@ -63,8 +63,8 @@
           "content",
           "reasoning_content"
         ],
-        "default": "off",
-        "description": "How to stream Cursor's thinking output. off: drop (not sent). reasoning_content: send in the reasoning_content field (OpenAI-style). content: send as normal content, markdown blockquote + \"---\" before reply (OpenClaw streaming cards). Proxy reads from openclaw.json."
+        "default": "content",
+        "description": "How to stream Cursor's thinking output. off: drop (not sent). content: send as normal content, markdown blockquote + \"---\" before reply (OpenClaw streaming cards). reasoning_content: send in the reasoning_content field (OpenAI-style). Proxy reads from openclaw.json."
       },
       "streamSpeed": {
         "type": "number",

@@ -19,7 +19,7 @@ import http from "node:http";
 import { spawn, execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -56,13 +56,13 @@ function fromConfigOrEnv(key, envKey, defaultVal, parse = (v) => v) {
   return defaultVal;
 }
 
-const PORT = parseInt(fromConfigOrEnv("port", "CURSOR_PROXY_PORT", "18790"), 10) || 18790;
+const PORT = Math.min(65535, Math.max(1, parseInt(fromConfigOrEnv("port", "CURSOR_PROXY_PORT", "18790"), 10) || 18790));
 const WORKSPACE_DIR = process.env.CURSOR_WORKSPACE_DIR || proxyConfigFile.workspaceDir || "";
 const API_KEY = process.env.CURSOR_PROXY_API_KEY || proxyConfigFile.apiKey || "";
 const OUTPUT_FORMAT = process.env.CURSOR_OUTPUT_FORMAT || proxyConfigFile.outputFormat || "stream-json";
 // Model is taken from each request (gateway-specified); no global override.
 
-const RAW_FORWARD_THINKING = fromConfig("forwardThinking", "off", (v) => {
+const RAW_FORWARD_THINKING = fromConfig("forwardThinking", "content", (v) => {
   if (v === "content") return "content";
   if (v === "reasoning_content" || v === true || v === "true") return "reasoning_content";
   return false; // "off", "false", or unknown
@@ -80,6 +80,15 @@ const STREAM_RESOLVE_GRACE_MS = parseInt(fromConfig("streamResolveGraceMs", "500
 const TIMEOUT_MESSAGE = "Request timed out.";
 const MAX_CONSECUTIVE_FAILURES = parseInt(fromConfig("maxConsecutiveFailures", "8"), 10) || 8;
 const MAX_CONSECUTIVE_TIMEOUTS = parseInt(fromConfig("maxConsecutiveTimeouts", "5"), 10) || 5;
+
+/** Separator between thinking block and main body in "content" mode (streaming and non-streaming). */
+const THINKING_BODY_SEPARATOR = "\n\n---\n\n";
+
+/** Format thinking text as markdown blockquote for "content" mode. Single source for streaming prefix and non-streaming merge. */
+function formatThinkingBlock(text) {
+  if (!text || typeof text !== "string") return "";
+  return "> 💭 " + text.trim().replace(/\n/g, "\n> ");
+}
 
 // Prevent EPIPE from stderr (e.g. when gateway restarts and closes the pipe) from crashing the process.
 process.stderr.on("error", (err) => {
@@ -390,11 +399,21 @@ function ensureStreamHeaders(res, streamState) {
   streamState.headersSent = true;
 }
 
+/**
+ * forwardThinking modes (first principles):
+ * - off: do not forward thinking; stream only assistant "text" and final result.
+ * - content: thinking appears in message body as markdown blockquote ("> 💭 ..."); separator "---" before body; stream thinking as content deltas, then resultText with "\n\n---\n\n" prefix if no "text" deltas were received.
+ * - reasoning_content: thinking in separate field (delta.reasoning_content / message.reasoning_content); stream thinking as reasoning_content deltas, then resultText as content (no separator).
+ */
 function processStreamOutput(child, { requestId, model, sessionKey, res, streamState }) {
   return new Promise((resolve) => {
     let resolved = false;
     let resultText = "";
     let hasStreamedContent = false;
+    /** True when we streamed at least one assistant-body chunk (type "text"). When false and we have resultText, we send resultText at end. */
+    let hasStreamedTextContent = false;
+    /** True when we streamed thinking as content ("content" mode). Then we prepend "---" before resultText so thinking and body are visually separated. */
+    let hasStreamedThinkingContent = false;
     let error = null;
     let thinkingPhase = false;
     let thinkingEnded = false;
@@ -403,7 +422,7 @@ function processStreamOutput(child, { requestId, model, sessionKey, res, streamS
     const done = () => {
       if (resolved) return;
       resolved = true;
-      resolve({ resultText, hasStreamedContent, error });
+      resolve({ resultText, hasStreamedContent, hasStreamedTextContent, hasStreamedThinkingContent, error });
     };
 
     const rl = createInterface({ input: child.stdout, terminal: false });
@@ -450,13 +469,11 @@ function processStreamOutput(child, { requestId, model, sessionKey, res, streamS
             hasStreamedContent = true;
             if (streamState) ensureStreamHeaders(res, streamState);
             if (RAW_FORWARD_THINKING === "content") {
-              let prefix = "";
-              if (!thinkingPhase) {
-                thinkingPhase = true;
-                prefix = "> 💭 ";
-              }
+              if (!thinkingPhase) thinkingPhase = true;
+              const prefix = hasStreamedThinkingContent ? "" : "> 💭 ";
               const text = prefix + parsed.text.replace(/\n/g, "\n> ");
-              res.write(sseEvent(requestId, model, { content: text }));
+              if (text) res.write(sseEvent(requestId, model, { content: text }));
+              hasStreamedThinkingContent = true;
             } else {
               const delta = { reasoning_content: parsed.text };
               const chunk = {
@@ -474,9 +491,10 @@ function processStreamOutput(child, { requestId, model, sessionKey, res, streamS
       if (type === "text" && parsed.text) {
         if (RAW_FORWARD_THINKING === "content" && thinkingEnded && thinkingPhase) {
           thinkingPhase = false;
-          res.write(sseEvent(requestId, model, { content: "\n\n---\n\n" }));
+          res.write(sseEvent(requestId, model, { content: THINKING_BODY_SEPARATOR }));
         }
         hasStreamedContent = true;
+        hasStreamedTextContent = true;
         if (streamState) ensureStreamHeaders(res, streamState);
         res.write(sseEvent(requestId, model, { content: parsed.text }));
         return;
@@ -519,7 +537,7 @@ async function processStreamOutputWithTimeout(child, opts, effectiveTimeout) {
       try {
         child.kill("SIGKILL");
       } catch {}
-      return { resultText: "", hasStreamedContent: false, error: new Error(TIMEOUT_MESSAGE) };
+      return { resultText: "", hasStreamedContent: false, hasStreamedTextContent: false, hasStreamedThinkingContent: false, error: new Error(TIMEOUT_MESSAGE) };
     }
     throw err;
   }
@@ -572,7 +590,8 @@ async function handleStream(req, res, body) {
   let result = await processStreamOutputWithTimeout(child, { requestId, model, sessionKey, res, streamState }, effectiveTimeout);
 
   if (clientGone) {
-    log("info", `[${requestId}] agent finished after client disconnect, ${((Date.now() - startTime) / 1000).toFixed(1)}s, resultLen=${result.resultText.length}`);
+    log("info", `[${requestId}] agent finished after client disconnect, ${((Date.now() - startTime) / 1000).toFixed(1)}s, resultLen=${(result.resultText || "").length}`);
+    try { res.end(); } catch {}
     return;
   }
 
@@ -609,7 +628,10 @@ async function handleStream(req, res, body) {
     }, effectiveTimeout);
     result = await processStreamOutputWithTimeout(child, { requestId, model, sessionKey, res, streamState }, effectiveTimeout);
     clearTimeout(retryTimeout);
-    if (clientGone) return;
+    if (clientGone) {
+      try { res.end(); } catch {}
+      return;
+    }
     if (result.error) {
       const errStr = result.error?.message ?? String(result.error);
       const needsExit = recordFailure(errStr.slice(0, 200));
@@ -623,6 +645,10 @@ async function handleStream(req, res, body) {
         res.end();
       }
       exitIfNeeded(needsExit);
+      return;
+    }
+    if (clientGone) {
+      try { res.end(); } catch {}
       return;
     }
   }
@@ -658,15 +684,25 @@ async function handleStream(req, res, body) {
       } else {
         await streamChunked(res, requestId, model, result.resultText);
       }
-    } else if (result.resultText && result.hasStreamedContent) {
+    } else if (result.resultText && result.hasStreamedContent && result.hasStreamedTextContent) {
       log("debug", `[${requestId}] result received after text deltas, skipping duplicate`);
+    } else if (result.resultText && result.hasStreamedContent && !result.hasStreamedTextContent) {
+      ensureStreamHeaders(res, streamState);
+      const separator = result.hasStreamedThinkingContent ? THINKING_BODY_SEPARATOR : "";
+      const contentToSend = separator + result.resultText;
+      if (INSTANT_RESULT) {
+        res.write(sseEvent(requestId, model, { content: contentToSend }));
+      } else {
+        await streamChunked(res, requestId, model, contentToSend);
+      }
+      log("debug", `[${requestId}] streamed result as content${result.hasStreamedThinkingContent ? " (after thinking, with --- separator)" : " (only reasoning_content was streamed before)"}`);
     }
   }
 
   res.write(sseEvent(requestId, model, { finishReason: "stop" }));
   res.write("data: [DONE]\n\n");
   res.end();
-  log("info", `[${requestId}] completed in ${(elapsed / 1000).toFixed(1)}s, streamed=${result.hasStreamedContent}, resultLen=${result.resultText.length}`);
+  log("info", `[${requestId}] completed in ${(elapsed / 1000).toFixed(1)}s, streamed=${result.hasStreamedContent}, resultLen=${(result.resultText || "").length}`);
   exitIfNeeded(needsExit);
 }
 
@@ -797,6 +833,15 @@ async function handleNonStream(req, res, body) {
   }
 
   if (result.resultText) {
+    let content = result.resultText;
+    if (RAW_FORWARD_THINKING === "content" && result.thinkingText) {
+      content = formatThinkingBlock(result.thinkingText) + THINKING_BODY_SEPARATOR + result.resultText;
+    }
+    const message = {
+      role: "assistant",
+      content,
+      ...(result.thinkingText && RAW_FORWARD_THINKING === "reasoning_content" ? { reasoning_content: result.thinkingText } : {}),
+    };
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -804,19 +849,11 @@ async function handleNonStream(req, res, body) {
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model,
-        choices: [{
-          index: 0,
-          message: {
-            role: "assistant",
-            content: result.resultText,
-            ...(result.thinkingText && RAW_FORWARD_THINKING === "reasoning_content" ? { reasoning_content: result.thinkingText } : {}),
-          },
-          finish_reason: "stop",
-        }],
+        choices: [{ index: 0, message, finish_reason: "stop" }],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       }),
     );
-    log("info", `[${requestId}] completed in ${((Date.now() - startTime) / 1000).toFixed(1)}s, resultLen=${result.resultText.length}`);
+    log("info", `[${requestId}] completed in ${((Date.now() - startTime) / 1000).toFixed(1)}s, resultLen=${content.length}`);
   } else {
     const stderrSnippet = child._stderrBuf?.trim().slice(0, 200);
     needsExit = timedOut ? recordTimeout() : recordFailure(stderrSnippet);
@@ -922,15 +959,17 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: { message: "Not found" } }));
 });
 
-server.on("error", (err) => {
-  log("error", `HTTP server error: ${err?.message ?? String(err)}`);
-  if (err?.code === "EADDRINUSE") {
-    log("error", `Port ${PORT} already in use — exiting for restart`);
-    process.exit(2);
-  }
-});
+const LISTEN_RETRY_MS = 2000;
+const LISTEN_RETRIES = 2; // initial attempt + 2 retries = 3 total
 
-server.listen({ port: PORT, host: "127.0.0.1", reuseAddress: true }, () => {
+const PROXY_PID_FILE = join(OPENCLAW_DIR, "cursor-proxy.pid");
+
+function onListenSuccess() {
+  try {
+    writeFileSync(PROXY_PID_FILE, String(process.pid), "utf-8");
+  } catch {}
+  log("info", `Config file: ${openclawPath}`);
+  log("info", `Config (plugin ${PLUGIN_ID}): forwardThinking=${String(RAW_FORWARD_THINKING || "off")}, instantResult=${INSTANT_RESULT}, requestTimeout=${REQUEST_TIMEOUT_MS}, streamSpeed=${TARGET_CHARS_PER_SEC}, maxConsecutiveFailures=${MAX_CONSECUTIVE_FAILURES}, maxConsecutiveTimeouts=${MAX_CONSECUTIVE_TIMEOUTS}`);
   log("info", `Cursor streaming proxy on http://127.0.0.1:${PORT}`);
   if (CURSOR_PATH) {
     log("info", `Cursor agent: ${CURSOR_PATH}`);
@@ -941,16 +980,41 @@ server.listen({ port: PORT, host: "127.0.0.1", reuseAddress: true }, () => {
   log("info", `Sessions loaded: ${sessions.size} (max ${MAX_SESSIONS})`);
   if (API_KEY) log("info", "API key authentication enabled");
   if (WORKSPACE_DIR) log("info", `Workspace: ${WORKSPACE_DIR}`);
+}
+
+let listenRetriesLeft = LISTEN_RETRIES;
+
+server.on("error", (err) => {
+  if (err?.code === "EADDRINUSE" && listenRetriesLeft > 0) {
+    listenRetriesLeft--;
+    log("warn", `Port ${PORT} in use, retrying in ${LISTEN_RETRY_MS / 1000}s (${listenRetriesLeft + 1} attempt(s) left)`);
+    setTimeout(() => {
+      server.listen({ port: PORT, host: "127.0.0.1", reuseAddress: true }, onListenSuccess);
+    }, LISTEN_RETRY_MS);
+    return;
+  }
+  log("error", `HTTP server error: ${err?.message ?? String(err)}`);
+  if (err?.code === "EADDRINUSE") {
+    log("error", `Port ${PORT} already in use after ${LISTEN_RETRIES + 1} attempts — exiting for restart`);
+    try { if (existsSync(PROXY_PID_FILE)) rmSync(PROXY_PID_FILE, { force: true }); } catch { /* best-effort remove PID file */ }
+    process.exit(2);
+  }
 });
+
+server.listen({ port: PORT, host: "127.0.0.1", reuseAddress: true }, onListenSuccess);
 
 function gracefulShutdown(signal) {
   log("info", `Received ${signal}, shutting down gracefully...`);
+  try {
+    if (existsSync(PROXY_PID_FILE)) rmSync(PROXY_PID_FILE, { force: true });
+  } catch { /* best-effort remove PID file */ }
   server.close(() => {
     log("info", "All connections closed, exiting.");
     process.exit(0);
   });
   setTimeout(() => {
     log("warn", "Graceful shutdown timed out after 30s, forcing exit.");
+    try { if (existsSync(PROXY_PID_FILE)) rmSync(PROXY_PID_FILE, { force: true }); } catch { /* best-effort remove PID file */ }
     process.exit(1);
   }, 30_000).unref();
 }
@@ -959,13 +1023,15 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 process.on("uncaughtException", (err) => {
   const msg = `FATAL uncaughtException: ${err?.stack || err?.message || String(err)}`;
-  try { appendFileSync(LOG_FILE, `${localTimestamp()} [fatal] ${msg}\n`); } catch {}
-  try { process.stderr.write(`[cursor-proxy] ${msg}\n`); } catch {}
+  try { appendFileSync(LOG_FILE, `${localTimestamp()} [fatal] ${msg}\n`); } catch { /* best-effort log */ }
+  try { process.stderr.write(`[cursor-proxy] ${msg}\n`); } catch { /* best-effort stderr */ }
+  try { if (existsSync(PROXY_PID_FILE)) rmSync(PROXY_PID_FILE, { force: true }); } catch { /* best-effort remove PID file */ }
   process.exit(99);
 });
 process.on("unhandledRejection", (reason) => {
   const msg = `FATAL unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`;
-  try { appendFileSync(LOG_FILE, `${localTimestamp()} [fatal] ${msg}\n`); } catch {}
-  try { process.stderr.write(`[cursor-proxy] ${msg}\n`); } catch {}
+  try { appendFileSync(LOG_FILE, `${localTimestamp()} [fatal] ${msg}\n`); } catch { /* best-effort log */ }
+  try { process.stderr.write(`[cursor-proxy] ${msg}\n`); } catch { /* best-effort stderr */ }
+  try { if (existsSync(PROXY_PID_FILE)) rmSync(PROXY_PID_FILE, { force: true }); } catch { /* best-effort remove PID file */ }
   process.exit(99);
 });

@@ -6,12 +6,20 @@ export const MCP_SERVER_ID = "openclaw-gateway";
 export const PROVIDER_ID = "cursor-local";
 export const DEFAULT_PROXY_PORT = 18790;
 
+/** Parse proxy port from config; clamp to 1–65535; invalid/empty returns DEFAULT_PROXY_PORT. */
+export function parseProxyPort(value: unknown): number {
+  const n = typeof value === "number" ? value : Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_PROXY_PORT;
+  return Math.min(65535, Math.max(1, n));
+}
 
 const OPENCLAW_HOME = join(homedir(), ".openclaw");
 export const OPENCLAW_LOGS_DIR = join(OPENCLAW_HOME, "logs");
 export const OPENCLAW_CONFIG_PATH = join(OPENCLAW_HOME, "openclaw.json");
 /** Legacy path; proxy no longer uses this (reads openclaw.json only). Uninstall still deletes it if present. */
 export const CURSOR_PROXY_CONFIG_PATH = join(OPENCLAW_HOME, "cursor-proxy.json");
+/** Proxy writes its PID here on listen; gateway kills by this when lsof is unavailable (e.g. sandbox). */
+export const CURSOR_PROXY_PID_PATH = join(OPENCLAW_HOME, "cursor-proxy.pid");
 export const CURSOR_PROXY_LOG_PATH = join(OPENCLAW_LOGS_DIR, "cursor-proxy.log");
 export const CURSOR_PROXY_STDERR_LOG_PATH = join(OPENCLAW_LOGS_DIR, "cursor-proxy.stderr.log");
 

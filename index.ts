@@ -4,16 +4,20 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpa
 import { createHash } from "crypto";
 import { join, resolve, dirname, isAbsolute } from "path";
 import { homedir } from "os";
-import { execSync, spawn } from "child_process";
+import { execSync, spawn, spawnSync } from "child_process";
 import { createRequire } from "module";
 import { runSetup, type SetupContext, type CursorModel, detectCursorPath, detectOutputFormat, discoverCursorModels } from "./src/setup.js";
 import { runDoctorChecks, formatDoctorResults, countDiscoveredTools } from "./src/doctor.js";
-import { PLUGIN_ID, PROVIDER_ID, DEFAULT_PROXY_PORT, OPENCLAW_CONFIG_PATH, OPENCLAW_LOGS_DIR, CURSOR_PROXY_LOG_PATH, CURSOR_PROXY_STDERR_LOG_PATH, getCursorMcpConfigPath, type OutputFormat } from "./src/constants.js";
+import { PLUGIN_ID, PROVIDER_ID, DEFAULT_PROXY_PORT, parseProxyPort, OPENCLAW_CONFIG_PATH, OPENCLAW_LOGS_DIR, CURSOR_PROXY_PID_PATH, CURSOR_PROXY_LOG_PATH, CURSOR_PROXY_STDERR_LOG_PATH, getCursorMcpConfigPath, type OutputFormat } from "./src/constants.js";
 
 let proxyChild: ReturnType<typeof spawn> | null = null;
 let proxyRestartCount = 0;
 let lastProxyStartTime = 0;
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+/** Ensures only one startProxy run at a time (no concurrent kill+spawn from register + health + exit). */
+let startProxyInProgress = false;
+/** So we only show "gateway restart" outro once per process (avoid duplicate when both runInteractiveSetupInProcess and setup command run). */
+let gatewayRestartOutroShown = false;
 const MAX_PROXY_RESTARTS = 3;
 const PROXY_RESTART_DELAYS = [2000, 10000, 60000];
 const PROXY_STABLE_PERIOD = 300000;
@@ -45,7 +49,36 @@ function isProxyRunning(port: number): boolean {
   return fetchProxyHealth(port) !== null;
 }
 
-function killPortProcess(port: number) {
+/** True if any process is listening on the port (lsof/netstat). More reliable than isProxyRunning when health check times out. */
+function portHasProcess(port: number): boolean {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
+        encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      return out.length > 0;
+    }
+    const out = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Kill one PID via system kill/taskkill in a subprocess. Used when running inside gateway daemon where process.kill may be restricted. */
+function killPidBySubprocess(pid: number): void {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try {
+    if (process.platform === "win32") {
+      execSync(`taskkill /F /PID ${pid}`, { encoding: "utf-8", stdio: "pipe", timeout: 5000 });
+    } else {
+      spawnSync("kill", ["-9", String(pid)], { stdio: "pipe", timeout: 5000 });
+    }
+  } catch {}
+}
+
+/** @param signal Default SIGTERM; use "SIGKILL" to force-immediate exit (releases port without graceful shutdown). */
+function killPortProcess(port: number, signal: "SIGTERM" | "SIGKILL" = "SIGTERM") {
   try {
     if (process.platform === "win32") {
       const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, {
@@ -53,13 +86,15 @@ function killPortProcess(port: number) {
       }).trim();
       const pids = new Set(out.split("\n").map(l => l.trim().split(/\s+/).pop()).filter(Boolean));
       for (const pid of pids) {
-        try { process.kill(parseInt(pid!, 10), "SIGTERM"); } catch {}
+        const n = parseInt(pid!, 10);
+        if (Number.isFinite(n)) killPidBySubprocess(n);
       }
     } else {
       const out = execSync(`lsof -ti :${port}`, { encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
       if (out) {
         for (const pid of out.split("\n")) {
-          try { process.kill(parseInt(pid, 10), "SIGTERM"); } catch {}
+          const n = parseInt(pid, 10);
+          if (Number.isFinite(n)) killPidBySubprocess(n);
         }
       }
     }
@@ -120,7 +155,10 @@ async function runInteractiveSetupInProcess(opts: {
     if (savedPluginConfig) mergePluginConfig(savedPluginConfig);
   });
 
-  clack.outro("Run `openclaw gateway restart` to apply changes");
+  if (!gatewayRestartOutroShown) {
+    gatewayRestartOutroShown = true;
+    clack.outro("Run `openclaw gateway restart` (or restart your gateway) to apply changes.");
+  }
 }
 
 function readPackageVersion(dir: string): string {
@@ -174,6 +212,10 @@ function buildProxyChildEnv(vars: {
   return env;
 }
 
+/**
+ * Single entry point to start the streaming proxy. Serialized: only one run at a time.
+ * Flow: kill our child (if any) → kill any process on port → wait until port free → spawn.
+ */
 function startProxy(opts: {
   pluginDir: string;
   cursorPath: string;
@@ -182,21 +224,56 @@ function startProxy(opts: {
   outputFormat: OutputFormat;
   logger: any;
 }) {
+  if (startProxyInProgress) return;
+  startProxyInProgress = true;
+
   const proxyScript = join(opts.pluginDir, "mcp-server", "streaming-proxy.mjs");
-  if (!existsSync(proxyScript)) return;
+  if (!existsSync(proxyScript)) {
+    startProxyInProgress = false;
+    return;
+  }
 
   if (proxyChild) {
-    proxyChild.kill();
+    try { proxyChild.kill("SIGKILL"); } catch { /* process may already be dead */ }
     proxyChild = null;
   }
+  // Kill by PID file using system kill (subprocess). Upgrade runs in CLI so process.kill works; gateway restart runs in daemon where process.kill may be restricted — shell "kill -9" works.
+  try {
+    if (existsSync(CURSOR_PROXY_PID_PATH)) {
+      const pidStr = readFileSync(CURSOR_PROXY_PID_PATH, "utf-8").trim();
+      const pid = parseInt(pidStr, 10);
+      if (Number.isFinite(pid) && pid > 0) killPidBySubprocess(pid);
+      rmSync(CURSOR_PROXY_PID_PATH, { force: true });
+    }
+  } catch { /* best-effort kill by PID and remove PID file */ }
+  killPortProcess(opts.port, "SIGKILL");
 
-  killPortProcess(opts.port);
-  for (let i = 0; i < 15; i++) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-    if (!isProxyRunning(opts.port)) break;
+  const waitMs = 200;
+  const maxTries = 30;
+  let portFree = false;
+  for (let i = 0; i < maxTries; i++) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    if (!portHasProcess(opts.port)) {
+      portFree = true;
+      break;
+    }
   }
-  // Brief wait so the OS releases the port after the killed process exits (avoids EADDRINUSE on spawn).
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  if (!portFree) {
+    opts.logger.error(`Port ${opts.port} still in use after ${(maxTries * waitMs) / 1000}s — retrying in 10s`);
+    startProxyInProgress = false;
+    setTimeout(() => startProxy(opts), 10_000);
+    return;
+  }
+
+  // Extra kill + short wait before spawn so port is reliably free (e.g. after gateway restart race).
+  killPortProcess(opts.port, "SIGKILL");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  if (portHasProcess(opts.port)) {
+    opts.logger.warn(`Port ${opts.port} still in use before spawn — retrying in 10s`);
+    startProxyInProgress = false;
+    setTimeout(() => startProxy(opts), 10_000);
+    return;
+  }
 
   try { mkdirSync(OPENCLAW_LOGS_DIR, { recursive: true }); } catch {}
   let stderrBuf = "";
@@ -205,57 +282,63 @@ function startProxy(opts: {
     try { appendFileSync(CURSOR_PROXY_STDERR_LOG_PATH, chunk); } catch {}
   };
 
-  const child = spawn("node", [proxyScript], {
-    env: buildProxyChildEnv({
-      CURSOR_PATH: opts.cursorPath,
-      CURSOR_WORKSPACE_DIR: opts.workspaceDir,
-      CURSOR_PROXY_PORT: String(opts.port),
-      CURSOR_OUTPUT_FORMAT: opts.outputFormat,
-      CURSOR_PROXY_SCRIPT_HASH: computeFileHash(proxyScript),
-    }),
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  proxyChild = child;
+  try {
+    const child = spawn("node", [proxyScript], {
+      env: buildProxyChildEnv({
+        CURSOR_PATH: opts.cursorPath,
+        CURSOR_WORKSPACE_DIR: opts.workspaceDir,
+        CURSOR_PROXY_PORT: String(opts.port),
+        CURSOR_OUTPUT_FORMAT: opts.outputFormat,
+        CURSOR_PROXY_SCRIPT_HASH: computeFileHash(proxyScript),
+      }),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    proxyChild = child;
 
-  child.stderr?.on("data", (d: Buffer | string) => {
-    const s = Buffer.isBuffer(d) ? d.toString("utf-8") : String(d);
-    appendProxyStderr(s);
-  });
-  child.on("error", (err: Error) => {
-    const msg = `[proxy-child-error] ${err?.message || String(err)}\n`;
-    appendProxyStderr(msg);
-    opts.logger.error(`Streaming proxy child process error: ${err?.message || String(err)}`);
-  });
+    child.stderr?.on("data", (d: Buffer | string) => {
+      const s = Buffer.isBuffer(d) ? d.toString("utf-8") : String(d);
+      appendProxyStderr(s);
+    });
+    child.on("error", (err: Error) => {
+      const msg = `[proxy-child-error] ${err?.message || String(err)}\n`;
+      appendProxyStderr(msg);
+      opts.logger.error(`Streaming proxy child process error: ${err?.message || String(err)}`);
+    });
 
-  lastProxyStartTime = Date.now();
+    lastProxyStartTime = Date.now();
 
-  child.on("exit", (code) => {
-    opts.logger.info(`Streaming proxy exited (code ${code})`);
-    if (proxyChild === child) proxyChild = null;
+    child.on("exit", (code, signal) => {
+      opts.logger.info(`Streaming proxy exited (code ${code}, signal ${signal ?? "none"})`);
+      if (proxyChild === child) proxyChild = null;
 
-    if (code === 0 || code === null || proxyRestartScheduled) return;
+      // Normal exit or killed by signal (e.g. gateway restart / killPortProcess): do not auto-restart.
+      if (code === 0 || code === null || proxyRestartScheduled) return;
+      if (signal != null || (typeof code === "number" && code >= 128 && code <= 255)) return;
 
-    const stderrSnippet = stderrBuf.trim().slice(-2000);
-    if (stderrSnippet) {
-      opts.logger.warn(`Streaming proxy stderr (tail): ${stderrSnippet.replace(/\s+/g, " ")}`);
-    }
+      const stderrSnippet = stderrBuf.trim().slice(-2000);
+      if (stderrSnippet) {
+        opts.logger.warn(`Streaming proxy stderr (tail): ${stderrSnippet.replace(/\s+/g, " ")}`);
+      }
 
-    const uptime = Date.now() - lastProxyStartTime;
-    if (uptime > PROXY_STABLE_PERIOD) proxyRestartCount = 0;
+      const uptime = Date.now() - lastProxyStartTime;
+      if (uptime > PROXY_STABLE_PERIOD) proxyRestartCount = 0;
 
-    if (proxyRestartCount >= MAX_PROXY_RESTARTS) {
-      opts.logger.error(`Proxy crashed ${proxyRestartCount} times within cooldown, not restarting. Run: openclaw cursor-brain proxy restart`);
-      return;
-    }
+      if (proxyRestartCount >= MAX_PROXY_RESTARTS) {
+        opts.logger.error(`Proxy crashed ${proxyRestartCount} times within cooldown, not restarting. Run: openclaw cursor-brain proxy restart`);
+        return;
+      }
 
-    const delay = PROXY_RESTART_DELAYS[Math.min(proxyRestartCount, PROXY_RESTART_DELAYS.length - 1)];
-    proxyRestartCount++;
-    opts.logger.warn(`Proxy crashed (code ${code}), restarting in ${delay / 1000}s (attempt ${proxyRestartCount}/${MAX_PROXY_RESTARTS})`);
-    setTimeout(() => startProxy(opts), delay);
-  });
+      const delay = PROXY_RESTART_DELAYS[Math.min(proxyRestartCount, PROXY_RESTART_DELAYS.length - 1)];
+      proxyRestartCount++;
+      opts.logger.warn(`Proxy crashed (code ${code}), restarting in ${delay / 1000}s (attempt ${proxyRestartCount}/${MAX_PROXY_RESTARTS})`);
+      setTimeout(() => startProxy(opts), delay);
+    });
 
-  opts.logger.info(`Streaming proxy started on port ${opts.port} (pid ${child.pid})`);
-  startHealthCheck(opts);
+    opts.logger.info(`Streaming proxy started on port ${opts.port} (pid ${child.pid})`);
+    startHealthCheck(opts);
+  } finally {
+    startProxyInProgress = false;
+  }
 }
 
 let proxyRestartScheduled = false;
@@ -272,7 +355,7 @@ function startHealthCheck(opts: { pluginDir: string; cursorPath: string; workspa
         opts.logger.warn(`Proxy health degraded (failures=${health.consecutiveFailures}, timeouts=${health.consecutiveTimeouts}), restarting...`);
         proxyRestartScheduled = true;
         if (healthCheckTimer) clearInterval(healthCheckTimer);
-        proxyChild?.kill();
+        try { proxyChild?.kill("SIGKILL"); } catch {}
         proxyChild = null;
         setTimeout(() => {
           proxyRestartScheduled = false;
@@ -341,7 +424,7 @@ function parseNum(input: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** Merge patch into plugins.entries[PLUGIN_ID].config. Only keys with a single source in plugin config are stored; PLUGIN_CONFIG_EXCLUDE_KEYS are dropped and removed from entry. */
+/** Merge patch into plugins.entries[PLUGIN_ID].config. User-submitted patch overwrites existing entry.config (patch wins). PLUGIN_CONFIG_EXCLUDE_KEYS are dropped. */
 function mergePluginConfig(patch: Record<string, unknown>): void {
   const filtered = { ...patch };
   for (const k of PLUGIN_CONFIG_EXCLUDE_KEYS) delete filtered[k];
@@ -359,7 +442,7 @@ function mergePluginConfig(patch: Record<string, unknown>): void {
 }
 
 /**
- * Interactive prompts for plugin config: iterates configSchema.properties and prompts by type (boolean → confirm, number → text, string+enum → select, string → text).
+ * Interactive prompts for plugin config. Initial values: old/saved (current) overrides schema defaults per key; if no old value, use schema default. Returned value is what the user submitted and must overwrite old when saving (see mergePluginConfig).
  * Model/fallbacks are not in plugin config; they live in agents.defaults.model and providers (see saveModelSelection).
  */
 async function promptPluginConfig(current: Record<string, unknown>): Promise<Record<string, unknown> | null> {
@@ -773,10 +856,10 @@ const plugin = {
       }
       const runInteractiveSetup = isPluginsInstall && result.cursorPath && result.cursorModels.length > 0 && !!process.stdin.isTTY;
       if (isPluginsInstall && result.cursorPath && !runInteractiveSetup) {
-        api.logger.info("Run 'openclaw cursor-brain setup' to choose primary/fallback models (optional), then 'openclaw gateway restart' to start.");
+        api.logger.info("Run 'openclaw cursor-brain setup' to choose primary/fallback models (optional), then restart your gateway to start.");
       }
 
-      const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+      const proxyPort = parseProxyPort(pluginConfig.proxyPort);
       const existingProviders = (config as any).models?.providers ?? {};
       const discovered = result.cursorModels;
       const providerExists = !!existingProviders[PROVIDER_ID];
@@ -899,15 +982,24 @@ const plugin = {
         if (isPluginsInstall) setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
       }
 
-      if (result.cursorPath && !isProxyCmd && !isPluginsInstall && !isSetupOnly) {
+      // On gateway restart we want proxy to start: use result.cursorPath or fallback to config so proxy always comes up when not in install/setup/uninstall.
+      const effectiveCursorPath = result.cursorPath || detectCursorPath(pluginConfig.cursorPath as string | undefined);
+      const effectiveOutputFormat =
+        result.outputFormat ?? (effectiveCursorPath ? detectOutputFormat(effectiveCursorPath, pluginConfig.outputFormat as string | undefined) : undefined);
+      if (effectiveCursorPath && !isProxyCmd && !isPluginsInstall && !isSetupOnly) {
         const proxyOpts = {
           pluginDir,
-          cursorPath: result.cursorPath,
+          cursorPath: effectiveCursorPath,
           workspaceDir: ctx.workspaceDir,
           port: proxyPort,
-          outputFormat: result.outputFormat,
+          outputFormat: effectiveOutputFormat ?? ("stream-json" as OutputFormat),
           logger: api.logger,
         };
+
+        // Don't trust in-memory proxyChild when register() runs: on any platform (macOS LaunchAgent,
+        // Linux systemd, Windows service), gateway "restart" may reload in-place (same process).
+        // Re-adopt whatever is on the port so proxy is owned by this process on all platforms.
+        proxyChild = null;
 
         const proxyRunning = isProxyRunning(proxyPort);
         let needRestart = !proxyRunning;
@@ -928,15 +1020,10 @@ const plugin = {
 
         if (needRestart) {
           startProxy(proxyOpts);
-        } else if (!proxyChild) {
-          // Proxy is running but not our child (orphan from previous gateway).
-          // Kill it and start a fresh one under this process tree to ensure
-          // proper stdio handling and health monitoring.
-          api.logger.info(`Adopting orphan proxy on port ${proxyPort} — killing and restarting under this gateway`);
-          startProxy(proxyOpts);
         } else {
-          api.logger.info(`Streaming proxy up-to-date on port ${proxyPort}`);
-          startHealthCheck(proxyOpts);
+          // Proxy is on port; we cleared proxyChild so we always adopt (kill + start) and own the process.
+          api.logger.info(`Adopting proxy on port ${proxyPort} — killing and restarting under this gateway`);
+          startProxy(proxyOpts);
         }
       }
     }
@@ -979,7 +1066,7 @@ const plugin = {
           const currentModel = (config.agents as any)?.defaults?.model;
           const curPrimary = currentModel?.primary?.replace(`${PROVIDER_ID}/`, "");
           const curFallbacks = (currentModel?.fallbacks as string[] | undefined)?.map((f: string) => f.replace(`${PROVIDER_ID}/`, ""));
-          const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+          const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           const selection = await promptModelSelection(result.cursorModels, curPrimary, curFallbacks);
           if (selection) {
             try {
@@ -989,7 +1076,18 @@ const plugin = {
               clack.log.error(`Could not save model config: ${e?.message ?? String(e)}`);
             }
           }
-          const configResult = await promptPluginConfig(pluginConfig as Record<string, unknown>);
+          // Upgrade: use saved old config as initial so prompt shows old values; otherwise use current pluginConfig. User's submitted values overwrite on save.
+          const initialConfigForPrompt: Record<string, unknown> = (() => {
+            const raw = process.env.OPENCLAW_CURSOR_BRAIN_UPGRADE_INITIAL_CONFIG;
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw) as Record<string, unknown>;
+                if (parsed && typeof parsed === "object") return parsed;
+              } catch {}
+            }
+            return pluginConfig as Record<string, unknown>;
+          })();
+          const configResult = await promptPluginConfig(initialConfigForPrompt);
           if (configResult) {
             try {
               mergePluginConfig(configResult);
@@ -1001,7 +1099,10 @@ const plugin = {
           try {
             syncPluginInstallRecord({ installPath: pluginDir, updateTimestamp: false, preservedConfig: configResult ?? undefined });
           } catch {}
-          clack.outro("Run `openclaw gateway restart` to apply changes");
+          if (!gatewayRestartOutroShown) {
+            gatewayRestartOutroShown = true;
+            clack.outro("Run `openclaw gateway restart` (or restart your gateway) to apply changes.");
+          }
           process.exit(0);
         });
 
@@ -1045,7 +1146,7 @@ const plugin = {
 
           const toolCandidates = countDiscoveredTools() ?? 0;
 
-          const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+          const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           const proxyUp = isProxyRunning(proxyPort);
           const providers = (config as any).models?.providers ?? {};
           const hasProvider = !!providers[PROVIDER_ID];
@@ -1104,8 +1205,7 @@ const plugin = {
             console.log("  - Already unregistered or command failed");
           }
 
-          console.log("\nDone! Restart the gateway to apply changes:");
-          console.log("  openclaw gateway restart");
+          console.log("\nRun `openclaw gateway restart` (or restart your gateway) to apply changes.");
         });
 
       prog
@@ -1159,6 +1259,30 @@ const plugin = {
           }
 
           const s = clack.spinner();
+          // Kill proxy first so port is free before install (upgrade does not run uninstall.mjs, so proxy is never stopped otherwise).
+          let proxyPort = DEFAULT_PROXY_PORT;
+          try {
+            const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
+            const portFromConfig = cfg?.plugins?.entries?.[PLUGIN_ID]?.config?.proxyPort;
+            if (portFromConfig != null) proxyPort = parseProxyPort(portFromConfig);
+          } catch { /* config read failed, use default port */ }
+          s.start("Stopping streaming proxy...");
+          try {
+            if (existsSync(CURSOR_PROXY_PID_PATH)) {
+              const pidStr = readFileSync(CURSOR_PROXY_PID_PATH, "utf-8").trim();
+              const pid = parseInt(pidStr, 10);
+              if (Number.isFinite(pid) && pid > 0) killPidBySubprocess(pid);
+              rmSync(CURSOR_PROXY_PID_PATH, { force: true });
+            }
+          } catch { /* best-effort kill by PID and remove PID file */ }
+          killPortProcess(proxyPort, "SIGKILL");
+          for (let w = 0; w < 20; w++) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+            if (!portHasProcess(proxyPort)) break;
+          }
+          try { if (existsSync(CURSOR_PROXY_PID_PATH)) rmSync(CURSOR_PROXY_PID_PATH, { force: true }); } catch { /* best-effort remove PID file */ }
+          s.stop("Streaming proxy stopped");
+
           s.start("Removing old plugin...");
           try {
             execSync(`openclaw plugins uninstall ${PLUGIN_ID}`, {
@@ -1207,21 +1331,19 @@ const plugin = {
             existsSync(join(resolvedPath, "package.json"))
           );
           const installSource = isLocalPath ? resolvedPath : source;
-          const installArg = isLocalPath ? `"${installSource.replace(/"/g, '\\"')}"` : installSource;
 
           s.start(`Installing from ${source}...`);
+          const installCwd = isLocalPath ? resolvedPath : process.cwd();
+          const installArgs = isLocalPath ? ["plugins", "install", "."] : ["plugins", "install", source];
+          const installResult = spawnSync("openclaw", installArgs, {
+            cwd: installCwd,
+            encoding: "utf-8",
+            timeout: 60000,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
           let installError: string | undefined;
-          try {
-            const installCwd = isLocalPath ? resolvedPath : process.cwd();
-            const installCmd = isLocalPath ? "openclaw plugins install ." : `openclaw plugins install ${installArg}`;
-            execSync(installCmd, {
-              encoding: "utf-8",
-              timeout: 60000,
-              stdio: ["pipe", "pipe", "pipe"],
-              cwd: installCwd,
-            });
-          } catch (e: any) {
-            installError = [e?.stderr, e?.stdout, e?.message].filter(Boolean).join("\n").trim().slice(0, 800);
+          if (installResult.status !== 0 || installResult.error) {
+            installError = [installResult.stderr, installResult.stdout, installResult.error?.message].filter(Boolean).join("\n").trim().slice(0, 800);
           }
           let pluginEntry = join(installPath, "index.ts");
           if (!existsSync(pluginEntry) && isLocalPath) {
@@ -1276,19 +1398,28 @@ const plugin = {
 
           // Run post-install steps (discover models, model selection, plugin config) in a new process
           // so that the NEWLY INSTALLED plugin script is used, not the old one still in this process.
+          // Pass saved config via env so setup prompt shows old values as initial; user's submitted values then overwrite on save.
           s.stop("Delegating to new version for configuration...");
+          const setupEnv = { ...process.env };
+          if (savedPluginConfig && Object.keys(savedPluginConfig).length > 0) {
+            try {
+              setupEnv.OPENCLAW_CURSOR_BRAIN_UPGRADE_INITIAL_CONFIG = JSON.stringify(savedPluginConfig);
+            } catch {}
+          }
           try {
             execSync("openclaw cursor-brain setup", {
               encoding: "utf-8",
               stdio: "inherit",
               timeout: 600000,
+              env: setupEnv,
             });
           } catch (e: any) {
             if (e?.status !== undefined && e.status !== 0) {
               clack.log.warn(`Setup exited with code ${e.status}`);
             }
           }
-          clack.outro("Run `openclaw gateway restart` to apply changes");
+          // Setup child already showed "gateway restart" outro; parent only shows short completion to avoid duplicate.
+          clack.outro("Upgrade complete.");
           process.exit(0);
         });
 
@@ -1299,7 +1430,7 @@ const plugin = {
 
       proxyCmd
         .action(() => {
-          const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+          const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           let up = false;
           let pid = "";
           let sessions = "";
@@ -1332,15 +1463,24 @@ const plugin = {
         .command("stop")
         .description("Stop the streaming proxy")
         .action(async () => {
-          const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+          const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           if (!isProxyRunning(proxyPort)) {
             console.log("Proxy is not running.");
             return;
           }
-          killPortProcess(proxyPort);
+          try {
+            if (existsSync(CURSOR_PROXY_PID_PATH)) {
+              const pidStr = readFileSync(CURSOR_PROXY_PID_PATH, "utf-8").trim();
+              const pid = parseInt(pidStr, 10);
+              if (Number.isFinite(pid) && pid > 0) killPidBySubprocess(pid);
+              rmSync(CURSOR_PROXY_PID_PATH, { force: true });
+            }
+          } catch { /* best-effort kill by PID and remove PID file */ }
+          killPortProcess(proxyPort, "SIGKILL");
           await new Promise((r) => setTimeout(r, 500));
+          try { if (existsSync(CURSOR_PROXY_PID_PATH)) rmSync(CURSOR_PROXY_PID_PATH, { force: true }); } catch { /* best-effort remove PID file */ }
           if (isProxyRunning(proxyPort)) {
-            console.error(`Proxy on port ${proxyPort} may still be running. Try: kill $(lsof -ti :${proxyPort})`);
+            console.error(`Proxy on port ${proxyPort} may still be running. Try: kill -9 $(lsof -ti :${proxyPort})`);
           } else {
             console.log(`Proxy on port ${proxyPort} stopped.`);
           }
@@ -1350,7 +1490,7 @@ const plugin = {
         .command("restart")
         .description("Restart the streaming proxy (detached)")
         .action(async () => {
-          const proxyPort = (pluginConfig.proxyPort as number) || DEFAULT_PROXY_PORT;
+          const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
           if (!cursorPath) {
             console.error("Cannot restart: cursor-agent not found.");
@@ -1365,8 +1505,9 @@ const plugin = {
           }
 
           if (isProxyRunning(proxyPort)) {
-            killPortProcess(proxyPort);
+            killPortProcess(proxyPort, "SIGKILL");
             await new Promise((r) => setTimeout(r, 500));
+            try { if (existsSync(CURSOR_PROXY_PID_PATH)) rmSync(CURSOR_PROXY_PID_PATH, { force: true }); } catch { /* best-effort remove PID file */ }
           }
 
           const outputFormat = detectOutputFormat(cursorPath, pluginConfig.outputFormat as string | undefined);
