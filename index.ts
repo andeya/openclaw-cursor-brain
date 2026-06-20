@@ -17,7 +17,7 @@ let lastProxyStartTime = 0;
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 /** Ensures only one startProxy run at a time (no concurrent kill+spawn from register + health + exit). */
 let startProxyInProgress = false;
-/** So we only show "gateway restart" outro once per process (avoid duplicate when both runInteractiveSetupInProcess and setup command run). */
+/** So we only show "gateway restart" outro once per process (setup command). */
 let gatewayRestartOutroShown = false;
 const MAX_PROXY_RESTARTS = 3;
 const PROXY_RESTART_DELAYS = [2000, 10000, 60000];
@@ -119,70 +119,6 @@ function computeFileHash(filePath: string): string {
     const content = readFileSync(filePath, "utf-8");
     return createHash("sha256").update(content).digest("hex").slice(0, 12);
   } catch { return "unknown"; }
-}
-
-/** Run interactive setup (model selection + plugin config) after register completes. */
-async function runInteractiveSetupInProcess(opts: {
-  pluginDir: string;
-  config: Record<string, any>;
-  pluginConfig: Record<string, unknown>;
-  result: { cursorPath: string; cursorModels: CursorModel[]; outputFormat: OutputFormat };
-  proxyPort: number;
-}): Promise<void> {
-  const clack = loadClack();
-  clack.intro(`Cursor Brain Setup (v${readPackageVersion(opts.pluginDir)})`);
-
-  const currentModel = (opts.config.agents as any)?.defaults?.model;
-  const curPrimary = currentModel?.primary?.replace(`${PROVIDER_ID}/`, "");
-  const curFallbacks = (currentModel?.fallbacks as string[] | undefined)?.map((f: string) => f.replace(`${PROVIDER_ID}/`, ""));
-
-  const selection = await promptModelSelection(opts.result.cursorModels, curPrimary, curFallbacks);
-  if (selection) {
-    try {
-      saveModelSelection(selection.primary, selection.fallbacks, opts.proxyPort, opts.result.cursorModels);
-      clack.log.success("Model configuration saved to openclaw.json (agents.defaults.model + providers)");
-    } catch (e: any) {
-      clack.log.error(`Could not save model config: ${e?.message ?? String(e)}`);
-    }
-  }
-
-  const configResult = await promptPluginConfig(opts.pluginConfig as Record<string, unknown>);
-  if (configResult) {
-    try {
-      mergePluginConfig(configResult);
-      clack.log.success("Plugin configuration saved to openclaw.json");
-    } catch (e: any) {
-      clack.log.error(`Could not save config: ${e?.message ?? String(e)}`);
-    }
-  }
-
-  try {
-    syncPluginInstallRecord({ installPath: opts.pluginDir, updateTimestamp: false, preservedConfig: configResult ?? undefined });
-  } catch {}
-
-  const savedSelection = selection;
-  const savedPluginConfig = configResult;
-  setImmediate(() => {
-    fixInstallRecordSourceOnDisk(opts.pluginDir);
-    if (savedSelection) saveModelSelection(savedSelection.primary, savedSelection.fallbacks, opts.proxyPort, opts.result.cursorModels);
-    if (savedPluginConfig) mergePluginConfig(savedPluginConfig);
-  });
-
-  if (!gatewayRestartOutroShown) {
-    gatewayRestartOutroShown = true;
-    clack.outro("Run `openclaw gateway restart` (or restart your gateway) to apply changes.");
-  }
-}
-
-function scheduleInteractiveSetupInProcess(
-  opts: Parameters<typeof runInteractiveSetupInProcess>[0],
-  logger: { warn: (msg: string) => void },
-) {
-  setImmediate(() => {
-    void runInteractiveSetupInProcess(opts).catch((e: any) => {
-      logger.warn(`Interactive setup failed: ${e?.message ?? String(e)}`);
-    });
-  });
 }
 
 function readPackageVersion(dir: string): string {
@@ -878,8 +814,7 @@ const plugin = {
       if (result.cursorPath && result.mcpConfigured) {
         api.logger.info("Cursor Brain setup complete");
       }
-      const runInteractiveSetup = isPluginsInstall && result.cursorPath && result.cursorModels.length > 0 && !!process.stdin.isTTY;
-      if (isPluginsInstall && result.cursorPath && !runInteractiveSetup) {
+      if (isPluginsInstall && result.cursorPath) {
         api.logger.info("Run 'openclaw cursor-brain setup' to choose primary/fallback models (optional), then restart your gateway to start.");
       }
 
@@ -925,9 +860,6 @@ const plugin = {
               }
             } catch (e: any) {
               api.logger.warn(`Could not set default model: ${e?.message ?? String(e)}`);
-            }
-            if (runInteractiveSetup) {
-              scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
             }
           } else {
             // Read fresh config from disk rather than using api.config snapshot,
@@ -980,19 +912,11 @@ const plugin = {
                 writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(patch, null, 2) + "\n");
                 api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
                 doSyncInstallRecord();
-                if (runInteractiveSetup) {
-                  scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
-                } else {
-                  setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
-                }
+                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
               } catch (err: any) {
                 api.logger.warn(`Could not write config: ${err?.message ?? String(err)}`);
                 doSyncInstallRecord();
-                if (runInteractiveSetup) {
-                  scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
-                } else {
-                  setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
-                }
+                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
               }
             } else {
               api.runtime.config.writeConfigFile(patch as any).then(() => {
