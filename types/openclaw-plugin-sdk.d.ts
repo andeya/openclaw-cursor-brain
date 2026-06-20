@@ -10,8 +10,18 @@ declare module "openclaw/plugin-sdk" {
     pluginConfig: Record<string, unknown> | undefined;
     logger: PluginLogger;
     runtime: {
-      config: {
-        writeConfigFile(patch: Record<string, any>): Promise<void>;
+      config?: {
+        current(): Record<string, any>;
+        mutateConfigFile(params: {
+          afterWrite?: { mode: "auto" | "none" };
+          mutate: (draft: Record<string, any>, context?: unknown) => unknown;
+        }): Promise<unknown>;
+        replaceConfigFile(params: {
+          nextConfig: Record<string, any>;
+          afterWrite?: { mode: "auto" | "none" };
+        }): Promise<unknown>;
+        /** @deprecated Use mutateConfigFile or replaceConfigFile */
+        writeConfigFile?(patch: Record<string, any>): Promise<void>;
       };
     };
     resolvePath(rel: string): string;

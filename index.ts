@@ -345,6 +345,85 @@ function buildProviderConfig(port: number, cursorModels: CursorModel[]) {
   };
 }
 
+function normalizePluginInstallRecordSource(draft: Record<string, any>): void {
+  const installRecord = draft.plugins?.installs?.[PLUGIN_ID];
+  if (installRecord?.source === "tarball") installRecord.source = "archive";
+}
+
+function applyDefaultAgentModel(
+  draft: Record<string, any>,
+  discovered: CursorModel[],
+  options: { providerExists: boolean },
+): boolean {
+  const currentPrimary = (draft.agents?.defaults?.model as any)?.primary;
+  const shouldSetDefaultModel =
+    !options.providerExists ||
+    !currentPrimary ||
+    String(currentPrimary).startsWith(`${PROVIDER_ID}/`);
+  if (!shouldSetDefaultModel) return false;
+
+  const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
+  const existingFallbacks = (draft.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
+  const fallbacks = existingFallbacks?.length
+    ? existingFallbacks
+    : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
+
+  const agents = draft.agents || {};
+  const defaults = agents.defaults || {};
+  defaults.model = { primary: `${PROVIDER_ID}/${primary}`, fallbacks };
+  agents.defaults = defaults;
+  draft.agents = agents;
+  return true;
+}
+
+function syncProviderToConfig(
+  draft: Record<string, any>,
+  proxyPort: number,
+  discovered: CursorModel[],
+  providerExists: boolean,
+): void {
+  const modelsSection = draft.models || {};
+  modelsSection.mode = "merge";
+  const providers = modelsSection.providers || {};
+  providers[PROVIDER_ID] = buildProviderConfig(proxyPort, discovered);
+  modelsSection.providers = providers;
+  draft.models = modelsSection;
+  normalizePluginInstallRecordSource(draft);
+  applyDefaultAgentModel(draft, discovered, { providerExists });
+}
+
+function applyOpenClawConfigMutation(
+  api: OpenClawPluginApi,
+  mutate: (draft: Record<string, any>) => void,
+  callbacks?: {
+    onSuccess?: () => void;
+    onError?: (err: unknown) => void;
+  },
+): void {
+  const mutateConfigFile = api.runtime?.config?.mutateConfigFile;
+  if (typeof mutateConfigFile === "function") {
+    mutateConfigFile({
+      afterWrite: { mode: "auto" },
+      mutate: (draft) => {
+        mutate(draft);
+      },
+    })
+      .then(() => callbacks?.onSuccess?.())
+      .catch((err: unknown) => callbacks?.onError?.(err));
+    return;
+  }
+
+  try {
+    let cfg: Record<string, any> = {};
+    try { cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch {}
+    mutate(cfg);
+    writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
+    callbacks?.onSuccess?.();
+  } catch (err) {
+    callbacks?.onError?.(err);
+  }
+}
+
 function autoSelectModels(
   models: CursorModel[],
   currentPrimary?: string,
@@ -841,78 +920,31 @@ const plugin = {
 
             if (providerUnchanged && providerExists) {
               api.logger.info(`Provider "${PROVIDER_ID}" unchanged (${discovered.length} models, port ${proxyPort})`);
-              doSyncInstallRecord();
-              // Still ensure default model is set when missing (e.g. config was overwritten or never set)
-              try {
-                let cfg: Record<string, any> = {};
-                try { cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { /* ignore */ }
-                const currentPrimary = (cfg.agents?.defaults?.model as any)?.primary;
-                if (!currentPrimary || String(currentPrimary).startsWith(`${PROVIDER_ID}/`)) {
-                  const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
-                  const existingFallbacks = (cfg.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
-                  const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
-                  const agents = cfg.agents || {};
-                  const defaults = agents.defaults || {};
-                  defaults.model = { primary: `${PROVIDER_ID}/${primary}`, fallbacks };
-                  agents.defaults = defaults;
-                  cfg.agents = agents;
-                  writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
-                  api.logger.info(`Default model set to ${PROVIDER_ID}/${primary}`);
+              applyOpenClawConfigMutation(api, (draft) => {
+                normalizePluginInstallRecordSource(draft);
+                if (applyDefaultAgentModel(draft, discovered, { providerExists: true })) {
+                  const primary = (draft.agents?.defaults?.model as any)?.primary;
+                  if (primary) api.logger.info(`Default model set to ${primary}`);
                 }
-              } catch (e: any) {
-                api.logger.warn(`Could not set default model: ${e?.message ?? String(e)}`);
-              }
-            } else {
-              // Read fresh config from disk rather than using api.config snapshot,
-              // which may contain stale plugins data (e.g. during install subprocess
-              // where the core has already updated plugins.installs on disk but
-              // api.config still holds the pre-update snapshot).
-              let freshConfig: Record<string, any> = {};
-              try { freshConfig = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { freshConfig = { ...config }; }
-
-              const patch: Record<string, unknown> = {
-                ...freshConfig,
-                models: {
-                  ...(freshConfig.models || {}),
-                  mode: "merge",
-                  providers: {
-                    ...(freshConfig.models?.providers || {}),
-                    [PROVIDER_ID]: newProviderConfig,
-                  },
+              }, {
+                onSuccess: doSyncInstallRecord,
+                onError: (err) => {
+                  api.logger.warn(`Could not set default model: ${err instanceof Error ? err.message : String(err)}`);
+                  doSyncInstallRecord();
                 },
-              };
-
-              const currentPrimary = (freshConfig.agents?.defaults?.model as any)?.primary;
-              const shouldSetDefaultModel =
-                !providerExists ||
-                !currentPrimary ||
-                String(currentPrimary).startsWith(`${PROVIDER_ID}/`);
-              if (shouldSetDefaultModel) {
-                const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
-                const existingFallbacks = (freshConfig.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
-                const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
-                (patch as any).agents = {
-                  ...(freshConfig.agents || {}),
-                  defaults: {
-                    ...(freshConfig.agents?.defaults || {}),
-                    model: {
-                      primary: `${PROVIDER_ID}/${primary}`,
-                      fallbacks,
-                    },
-                  },
-                };
-              }
-
-              // Ensure OpenClaw-accepted source value (avoids config overwrite during install)
-              const patchInstallRecord = (patch as any).plugins?.installs?.[PLUGIN_ID];
-              if (patchInstallRecord?.source === "tarball") patchInstallRecord.source = "archive";
-
-              api.runtime.config.writeConfigFile(patch as any).then(() => {
-                api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
-                doSyncInstallRecord();
-              }).catch((err: any) => {
-                api.logger.warn(`Could not write config: ${err?.message ?? String(err)}`);
-                doSyncInstallRecord();
+              });
+            } else {
+              applyOpenClawConfigMutation(api, (draft) => {
+                syncProviderToConfig(draft, proxyPort, discovered, providerExists);
+              }, {
+                onSuccess: () => {
+                  api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
+                  doSyncInstallRecord();
+                },
+                onError: (err) => {
+                  api.logger.warn(`Could not write config: ${err instanceof Error ? err.message : String(err)}`);
+                  doSyncInstallRecord();
+                },
               });
             }
           } catch (e: any) {
