@@ -853,6 +853,7 @@ const plugin = {
     const isUninstalling = isCursorBrainUninstallOrUpgrade;
     const isProxyCmd = /\bcursor-brain\s+proxy\b/.test(argv);
     const isSetupOnly = process.argv.includes("cursor-brain") && process.argv.includes("setup");
+    const isReadOnlyCliCmd = /\bcursor-brain\s+(doctor|status)\b/.test(argv);
 
     // Fix invalid source value on disk immediately so OpenClaw config validation won't overwrite
     if (!isPluginsInstall) {
@@ -960,7 +961,7 @@ const plugin = {
       const effectiveCursorPath = result.cursorPath || detectCursorPath(pluginConfig.cursorPath as string | undefined);
       const effectiveOutputFormat =
         result.outputFormat ?? (effectiveCursorPath ? detectOutputFormat(effectiveCursorPath, pluginConfig.outputFormat as string | undefined) : undefined);
-      if (effectiveCursorPath && !isProxyCmd && !isPluginsInstall && !isSetupOnly) {
+      if (effectiveCursorPath && !isProxyCmd && !isPluginsInstall && !isSetupOnly && !isReadOnlyCliCmd) {
         const proxyOpts = {
           pluginDir,
           cursorPath: effectiveCursorPath,
@@ -1091,7 +1092,7 @@ const plugin = {
             cursorPathOverride: pluginConfig.cursorPath as string | undefined,
           });
           console.log(formatDoctorResults(checks));
-          if (checks.some((c) => !c.ok)) process.exitCode = 1;
+          process.exit(checks.some((c) => !c.ok) ? 1 : 0);
         });
 
       prog
