@@ -429,29 +429,101 @@ function normalizePluginInstallRecordSource(draft: Record<string, any>): void {
   if (installRecord?.source === "tarball") installRecord.source = "archive";
 }
 
+const CURSOR_LOCAL_MODEL_REF_RE = /(?:^|\/)cursor-local\/([^/]+)$/;
+
+function extractCursorLocalModelId(modelRef: string | undefined): string | undefined {
+  if (!modelRef) return undefined;
+  const normalized = String(modelRef).trim();
+  const nested = normalized.match(CURSOR_LOCAL_MODEL_REF_RE);
+  if (nested) return nested[1];
+  if (normalized.startsWith(`${PROVIDER_ID}/`)) {
+    const tail = normalized.slice(PROVIDER_ID.length + 1);
+    return tail.split("/").pop() || tail;
+  }
+  if (!normalized.includes("/")) return normalized;
+  return normalized.split("/").pop();
+}
+
+function formatCursorLocalModelRef(modelId: string): string {
+  return `${PROVIDER_ID}/${modelId}`;
+}
+
+function normalizeCursorLocalModelRef(modelRef: string | undefined, fallback = "auto"): string {
+  return formatCursorLocalModelRef(extractCursorLocalModelId(modelRef) || fallback);
+}
+
+function isValidCursorLocalModelRef(modelRef: string | undefined): boolean {
+  if (!modelRef) return false;
+  const modelId = extractCursorLocalModelId(modelRef);
+  if (!modelId) return false;
+  return modelRef === formatCursorLocalModelRef(modelId);
+}
+
+function normalizeCursorLocalFallbacks(
+  fallbacks: string[] | undefined,
+  discovered: CursorModel[],
+  primaryId: string,
+): string[] {
+  if (fallbacks?.length) {
+    const normalized = fallbacks.map((f) => normalizeCursorLocalModelRef(f));
+    return [...new Set(normalized.filter((f) => extractCursorLocalModelId(f) !== primaryId))];
+  }
+  return discovered
+    .filter((m) => m.id !== primaryId)
+    .map((m) => formatCursorLocalModelRef(m.id));
+}
+
+function cleanupStaleCursorLocalAliasProviders(draft: Record<string, any>): boolean {
+  const providers = draft.models?.providers as Record<string, any> | undefined;
+  const cursorProvider = providers?.[PROVIDER_ID];
+  if (!providers || !cursorProvider?.baseUrl) return false;
+
+  const cursorBaseUrl = cursorProvider.baseUrl;
+  let changed = false;
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (providerId === PROVIDER_ID) continue;
+    const cfg = providerConfig as Record<string, any>;
+    if (cfg.baseUrl !== cursorBaseUrl) continue;
+    const models = cfg.models as Array<{ id?: string }> | undefined;
+    const looksLikeCursorAlias =
+      providerId.toLowerCase().includes("cursor") ||
+      models?.some((m) => String(m.id || "").includes(`${PROVIDER_ID}/`));
+    if (looksLikeCursorAlias) {
+      delete providers[providerId];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function applyDefaultAgentModel(
   draft: Record<string, any>,
   discovered: CursorModel[],
   options: { providerExists: boolean },
 ): boolean {
-  const currentPrimary = (draft.agents?.defaults?.model as any)?.primary;
-  const shouldSetDefaultModel =
+  const currentPrimary = (draft.agents?.defaults?.model as any)?.primary as string | undefined;
+  const existingFallbacks = (draft.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
+  const normalizedPrimary = normalizeCursorLocalModelRef(currentPrimary, "auto");
+  const primaryId = extractCursorLocalModelId(normalizedPrimary) || "auto";
+  const normalizedFallbacks = normalizeCursorLocalFallbacks(existingFallbacks, discovered, primaryId);
+
+  const shouldFixPrimary =
     !options.providerExists ||
     !currentPrimary ||
-    String(currentPrimary).startsWith(`${PROVIDER_ID}/`);
-  if (!shouldSetDefaultModel) return false;
+    !isValidCursorLocalModelRef(currentPrimary);
+  const shouldFixFallbacks =
+    !existingFallbacks?.length ||
+    existingFallbacks.length !== normalizedFallbacks.length ||
+    existingFallbacks.some((f, i) => f !== normalizedFallbacks[i]);
 
-  const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
-  const existingFallbacks = (draft.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
-  const fallbacks = existingFallbacks?.length
-    ? existingFallbacks
-    : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
+  if (!shouldFixPrimary && !shouldFixFallbacks) return false;
 
   const agents = draft.agents || {};
   const defaults = agents.defaults || {};
-  defaults.model = { primary: `${PROVIDER_ID}/${primary}`, fallbacks };
+  defaults.model = { primary: normalizedPrimary, fallbacks: normalizedFallbacks };
   agents.defaults = defaults;
   draft.agents = agents;
+  cleanupStaleCursorLocalAliasProviders(draft);
   return true;
 }
 
@@ -741,12 +813,15 @@ function removePluginFromOpenClawConfig(): boolean {
     const prefix = `${PROVIDER_ID}/`;
     const defaults = cfg.agents?.defaults;
     if (defaults?.model) {
-      if ((defaults.model.primary || "").toString().startsWith(prefix)) {
+      const primary = defaults.model.primary;
+      if (primary && (String(primary).startsWith(prefix) || String(primary).includes(`/${prefix}`))) {
         delete defaults.model.primary;
         changed = true;
       }
       if (defaults.model.fallbacks && Array.isArray(defaults.model.fallbacks)) {
-        const cleaned = defaults.model.fallbacks.filter((f: string) => !f.startsWith(prefix));
+        const cleaned = defaults.model.fallbacks.filter(
+          (f: string) => !String(f).startsWith(prefix) && !String(f).includes(`/${prefix}`),
+        );
         if (cleaned.length !== defaults.model.fallbacks.length) {
           defaults.model.fallbacks = cleaned.length ? cleaned : undefined;
           changed = true;
@@ -754,10 +829,24 @@ function removePluginFromOpenClawConfig(): boolean {
       }
       if (!defaults.model.primary && !defaults.model.fallbacks) delete defaults.model;
     }
-    if (cfg.models?.providers?.[PROVIDER_ID]) {
-      delete cfg.models.providers[PROVIDER_ID];
-      if (Object.keys(cfg.models.providers || {}).length === 0) delete cfg.models.providers;
+    const providers = cfg.models?.providers as Record<string, any> | undefined;
+    if (providers?.[PROVIDER_ID]) {
+      const cursorBaseUrl = providers[PROVIDER_ID]?.baseUrl;
+      delete providers[PROVIDER_ID];
+      if (cursorBaseUrl) {
+        for (const [providerId, providerConfig] of Object.entries(providers)) {
+          if ((providerConfig as Record<string, any>)?.baseUrl === cursorBaseUrl && providerId.toLowerCase().includes("cursor")) {
+            delete providers[providerId];
+          }
+        }
+      }
+      if (Object.keys(providers).length === 0) delete cfg.models.providers;
       changed = true;
+    } else if (providers) {
+      changed = cleanupStaleCursorLocalAliasProviders(cfg) || changed;
+    }
+    if (cfg.models?.providers && Object.keys(cfg.models.providers).length === 0) {
+      delete cfg.models.providers;
     }
     if (changed) writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
     return changed;
@@ -998,6 +1087,19 @@ const plugin = {
       }
       if (isPluginsInstall && result.cursorPath) {
         api.logger.info("Run 'openclaw cursor-brain setup' to choose primary/fallback models (optional), then restart your gateway to start.");
+        const existingProviders = (config as any).models?.providers ?? {};
+        const providerExists = !!existingProviders[PROVIDER_ID];
+        applyOpenClawConfigMutation(api, (draft) => {
+          normalizePluginInstallRecordSource(draft);
+          if (applyDefaultAgentModel(draft, result.cursorModels, { providerExists })) {
+            const primary = (draft.agents?.defaults?.model as any)?.primary;
+            if (primary) api.logger.info(`Default model normalized to ${primary}`);
+          }
+        }, {
+          onError: (err) => {
+            api.logger.warn(`Could not normalize default model: ${err instanceof Error ? err.message : String(err)}`);
+          },
+        });
       }
 
       const proxyPort = parseProxyPort(pluginConfig.proxyPort);
@@ -1097,8 +1199,10 @@ const plugin = {
           clack.log.info(`MCP config:    ${getCursorMcpConfigPath()}`);
 
           const currentModel = (config.agents as any)?.defaults?.model;
-          const curPrimary = currentModel?.primary?.replace(`${PROVIDER_ID}/`, "");
-          const curFallbacks = (currentModel?.fallbacks as string[] | undefined)?.map((f: string) => f.replace(`${PROVIDER_ID}/`, ""));
+          const curPrimary = extractCursorLocalModelId(currentModel?.primary);
+          const curFallbacks = (currentModel?.fallbacks as string[] | undefined)
+            ?.map((f: string) => extractCursorLocalModelId(f))
+            .filter((f): f is string => !!f);
           const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           const selection = await promptModelSelection(result.cursorModels, curPrimary, curFallbacks);
           if (selection) {
