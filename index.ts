@@ -766,35 +766,34 @@ const plugin = {
   configSchema: loadPluginConfigSchema(),
 
   register(api: OpenClawPluginApi) {
-    // Fix invalid source value on disk immediately so OpenClaw config validation won't overwrite
-    try {
-      if (existsSync(OPENCLAW_CONFIG_PATH)) {
-        const raw = readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
-        const cfg = JSON.parse(raw);
-        const rec = cfg?.plugins?.installs?.[PLUGIN_ID];
-        if (rec && rec.source && !VALID_SOURCES.includes(rec.source as any)) {
-          rec.source = rec.source === "tarball" ? "archive" : "path";
-          if (rec.source === "path" && rec.installPath) rec.sourcePath = resolve(rec.installPath);
-          writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
-        }
-      }
-    } catch { /* ignore */ }
-
-    const pluginDir = resolvePluginDir(api);
-    const config = api.config;
-    const pluginConfig = api.pluginConfig || {};
-
-    // Only skip setup when user runs our CLI uninstall/upgrade; "openclaw plugins upgrade" should still run register setup
+    const argv = process.argv.join(" ");
+    const isPluginsInstall = process.argv.includes("plugins") && process.argv.includes("install");
     const isCursorBrainUninstallOrUpgrade =
       process.argv.includes("cursor-brain") &&
       process.argv.some((a) => a === "uninstall" || a === "upgrade");
     const isUninstalling = isCursorBrainUninstallOrUpgrade;
-    const argv = process.argv.join(" ");
     const isProxyCmd = /\bcursor-brain\s+proxy\b/.test(argv);
-    // During "openclaw plugins install", do not start proxy or timers so the install process can exit
-    const isPluginsInstall = process.argv.includes("plugins") && process.argv.includes("install");
-    // When running "cursor-brain setup" (standalone or as install child), skip starting proxy; user will "gateway restart" to get proxy
     const isSetupOnly = process.argv.includes("cursor-brain") && process.argv.includes("setup");
+
+    // Fix invalid source value on disk immediately so OpenClaw config validation won't overwrite
+    if (!isPluginsInstall) {
+      try {
+        if (existsSync(OPENCLAW_CONFIG_PATH)) {
+          const raw = readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+          const cfg = JSON.parse(raw);
+          const rec = cfg?.plugins?.installs?.[PLUGIN_ID];
+          if (rec && rec.source && !VALID_SOURCES.includes(rec.source as any)) {
+            rec.source = rec.source === "tarball" ? "archive" : "path";
+            if (rec.source === "path" && rec.installPath) rec.sourcePath = resolve(rec.installPath);
+            writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    const pluginDir = resolvePluginDir(api);
+    const config = api.config;
+    const pluginConfig = api.pluginConfig || {};
 
     if (!isUninstalling) {
       const ctx: SetupContext = {
@@ -819,106 +818,95 @@ const plugin = {
       }
 
       const proxyPort = parseProxyPort(pluginConfig.proxyPort);
-      const existingProviders = (config as any).models?.providers ?? {};
-      const discovered = result.cursorModels;
-      const providerExists = !!existingProviders[PROVIDER_ID];
 
-      const doSyncInstallRecord = () => {
-        try {
-          syncPluginInstallRecord({ installPath: pluginDir, updateTimestamp: false });
-        } catch (e: any) {
-          api.logger.warn(`Could not sync install record: ${e?.message ?? String(e)}`);
-        }
-      };
+      if (!isPluginsInstall) {
+        const existingProviders = (config as any).models?.providers ?? {};
+        const discovered = result.cursorModels;
+        const providerExists = !!existingProviders[PROVIDER_ID];
 
-      if (result.cursorPath) {
-        try {
-          const newProviderConfig = buildProviderConfig(proxyPort, discovered);
-          const existingProvider = existingProviders[PROVIDER_ID];
-          const providerUnchanged = existingProvider &&
-            JSON.stringify(existingProvider) === JSON.stringify(newProviderConfig);
+        const doSyncInstallRecord = () => {
+          try {
+            syncPluginInstallRecord({ installPath: pluginDir, updateTimestamp: false });
+          } catch (e: any) {
+            api.logger.warn(`Could not sync install record: ${e?.message ?? String(e)}`);
+          }
+        };
 
-          if (providerUnchanged && providerExists) {
-            api.logger.info(`Provider "${PROVIDER_ID}" unchanged (${discovered.length} models, port ${proxyPort})`);
-            doSyncInstallRecord();
-            // Still ensure default model is set when missing (e.g. config was overwritten or never set)
-            try {
-              let cfg: Record<string, any> = {};
-              try { cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { /* ignore */ }
-              const currentPrimary = (cfg.agents?.defaults?.model as any)?.primary;
-              if (!currentPrimary || String(currentPrimary).startsWith(`${PROVIDER_ID}/`)) {
-                const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
-                const existingFallbacks = (cfg.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
-                const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
-                const agents = cfg.agents || {};
-                const defaults = agents.defaults || {};
-                defaults.model = { primary: `${PROVIDER_ID}/${primary}`, fallbacks };
-                agents.defaults = defaults;
-                cfg.agents = agents;
-                writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
-                api.logger.info(`Default model set to ${PROVIDER_ID}/${primary}`);
+        if (result.cursorPath) {
+          try {
+            const newProviderConfig = buildProviderConfig(proxyPort, discovered);
+            const existingProvider = existingProviders[PROVIDER_ID];
+            const providerUnchanged = existingProvider &&
+              JSON.stringify(existingProvider) === JSON.stringify(newProviderConfig);
+
+            if (providerUnchanged && providerExists) {
+              api.logger.info(`Provider "${PROVIDER_ID}" unchanged (${discovered.length} models, port ${proxyPort})`);
+              doSyncInstallRecord();
+              // Still ensure default model is set when missing (e.g. config was overwritten or never set)
+              try {
+                let cfg: Record<string, any> = {};
+                try { cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { /* ignore */ }
+                const currentPrimary = (cfg.agents?.defaults?.model as any)?.primary;
+                if (!currentPrimary || String(currentPrimary).startsWith(`${PROVIDER_ID}/`)) {
+                  const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
+                  const existingFallbacks = (cfg.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
+                  const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
+                  const agents = cfg.agents || {};
+                  const defaults = agents.defaults || {};
+                  defaults.model = { primary: `${PROVIDER_ID}/${primary}`, fallbacks };
+                  agents.defaults = defaults;
+                  cfg.agents = agents;
+                  writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
+                  api.logger.info(`Default model set to ${PROVIDER_ID}/${primary}`);
+                }
+              } catch (e: any) {
+                api.logger.warn(`Could not set default model: ${e?.message ?? String(e)}`);
               }
-            } catch (e: any) {
-              api.logger.warn(`Could not set default model: ${e?.message ?? String(e)}`);
-            }
-          } else {
-            // Read fresh config from disk rather than using api.config snapshot,
-            // which may contain stale plugins data (e.g. during install subprocess
-            // where the core has already updated plugins.installs on disk but
-            // api.config still holds the pre-update snapshot).
-            let freshConfig: Record<string, any> = {};
-            try { freshConfig = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { freshConfig = { ...config }; }
+            } else {
+              // Read fresh config from disk rather than using api.config snapshot,
+              // which may contain stale plugins data (e.g. during install subprocess
+              // where the core has already updated plugins.installs on disk but
+              // api.config still holds the pre-update snapshot).
+              let freshConfig: Record<string, any> = {};
+              try { freshConfig = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8")); } catch { freshConfig = { ...config }; }
 
-            const patch: Record<string, unknown> = {
-              ...freshConfig,
-              models: {
-                ...(freshConfig.models || {}),
-                mode: "merge",
-                providers: {
-                  ...(freshConfig.models?.providers || {}),
-                  [PROVIDER_ID]: newProviderConfig,
-                },
-              },
-            };
-
-            const currentPrimary = (freshConfig.agents?.defaults?.model as any)?.primary;
-            const shouldSetDefaultModel =
-              !providerExists ||
-              !currentPrimary ||
-              String(currentPrimary).startsWith(`${PROVIDER_ID}/`);
-            if (shouldSetDefaultModel) {
-              const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
-              const existingFallbacks = (freshConfig.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
-              const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
-              (patch as any).agents = {
-                ...(freshConfig.agents || {}),
-                defaults: {
-                  ...(freshConfig.agents?.defaults || {}),
-                  model: {
-                    primary: `${PROVIDER_ID}/${primary}`,
-                    fallbacks,
+              const patch: Record<string, unknown> = {
+                ...freshConfig,
+                models: {
+                  ...(freshConfig.models || {}),
+                  mode: "merge",
+                  providers: {
+                    ...(freshConfig.models?.providers || {}),
+                    [PROVIDER_ID]: newProviderConfig,
                   },
                 },
               };
-            }
 
-            // Ensure OpenClaw-accepted source value (avoids config overwrite during install)
-            const patchInstallRecord = (patch as any).plugins?.installs?.[PLUGIN_ID];
-            if (patchInstallRecord?.source === "tarball") patchInstallRecord.source = "archive";
-
-            if (isPluginsInstall) {
-              try {
-                mkdirSync(dirname(OPENCLAW_CONFIG_PATH), { recursive: true });
-                writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(patch, null, 2) + "\n");
-                api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
-                doSyncInstallRecord();
-                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
-              } catch (err: any) {
-                api.logger.warn(`Could not write config: ${err?.message ?? String(err)}`);
-                doSyncInstallRecord();
-                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
+              const currentPrimary = (freshConfig.agents?.defaults?.model as any)?.primary;
+              const shouldSetDefaultModel =
+                !providerExists ||
+                !currentPrimary ||
+                String(currentPrimary).startsWith(`${PROVIDER_ID}/`);
+              if (shouldSetDefaultModel) {
+                const primary = (currentPrimary as string)?.replace(`${PROVIDER_ID}/`, "") || "auto";
+                const existingFallbacks = (freshConfig.agents?.defaults?.model as any)?.fallbacks as string[] | undefined;
+                const fallbacks = existingFallbacks?.length ? existingFallbacks : discovered.filter((m) => m.id !== primary).map((m) => `${PROVIDER_ID}/${m.id}`);
+                (patch as any).agents = {
+                  ...(freshConfig.agents || {}),
+                  defaults: {
+                    ...(freshConfig.agents?.defaults || {}),
+                    model: {
+                      primary: `${PROVIDER_ID}/${primary}`,
+                      fallbacks,
+                    },
+                  },
+                };
               }
-            } else {
+
+              // Ensure OpenClaw-accepted source value (avoids config overwrite during install)
+              const patchInstallRecord = (patch as any).plugins?.installs?.[PLUGIN_ID];
+              if (patchInstallRecord?.source === "tarball") patchInstallRecord.source = "archive";
+
               api.runtime.config.writeConfigFile(patch as any).then(() => {
                 api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
                 doSyncInstallRecord();
@@ -927,15 +915,13 @@ const plugin = {
                 doSyncInstallRecord();
               });
             }
+          } catch (e: any) {
+            api.logger.warn(`Could not auto-configure: ${e?.message ?? String(e)}`);
+            doSyncInstallRecord();
           }
-        } catch (e: any) {
-          api.logger.warn(`Could not auto-configure: ${e?.message ?? String(e)}`);
+        } else {
           doSyncInstallRecord();
-          if (isPluginsInstall) setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
         }
-      } else {
-        doSyncInstallRecord();
-        if (isPluginsInstall) setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
       }
 
       // On gateway restart we want proxy to start: use result.cursorPath or fallback to config so proxy always comes up when not in install/setup/uninstall.

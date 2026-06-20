@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prefer Cursor Agent over other `agent` binaries on PATH (e.g. Grok) when auto-detecting `cursorPath`.
 - Defer interactive install setup so `register()` stays synchronous for OpenClaw's compiled runtime loader.
 - Skip interactive model selection during `plugins install`; OpenClaw aborts with "config changed since last load" after register writes `openclaw.json`. Use `openclaw cursor-brain setup` instead.
+- Skip all `openclaw.json` writes during `plugins install`; provider/model sync runs on gateway restart or `cursor-brain setup`.
 
 ## [1.5.4] - 2026-03-14
 
