@@ -19,7 +19,7 @@ import http from "node:http";
 import { spawn, execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -68,9 +68,10 @@ const RAW_FORWARD_THINKING = fromConfig("forwardThinking", "content", (v) => {
   return false; // "off", "false", or unknown
 });
 const FORWARD_THINKING = RAW_FORWARD_THINKING !== false;
-const INSTANT_RESULT = fromConfig("instantResult", true, (v) => v !== false && v !== "false");
+const RAW_FORWARD_TOOLS = fromConfig("forwardTools", "content", (v) => (v === "content" ? "content" : false));
+const FORWARD_TOOLS = RAW_FORWARD_TOOLS === "content";
+const INSTANT_RESULT = fromConfig("instantResult", false, (v) => v !== false && v !== "false");
 const TARGET_CHARS_PER_SEC = parseInt(fromConfig("streamSpeed", "200"), 10) || 200;
-const SHORT_TEXT_THRESHOLD = 100;
 const MIN_TIMEOUT_MS = 60_000;
 const RAW_REQUEST_TIMEOUT_MS = parseInt(fromConfig("requestTimeout", "300000"), 10);
 const RAW_DEGRADED_TIMEOUT_MS = parseInt(fromConfig("degradedTimeout", "300000"), 10);
@@ -88,6 +89,42 @@ const THINKING_BODY_SEPARATOR = "\n\n---\n\n";
 function formatThinkingBlock(text) {
   if (!text || typeof text !== "string") return "";
   return "> 💭 " + text.trim().replace(/\n/g, "\n> ");
+}
+
+function summarizeToolArgs(args, maxLen = 160) {
+  if (args == null) return "";
+  try {
+    const serialized = JSON.stringify(args);
+    return serialized.length <= maxLen ? serialized : `${serialized.slice(0, maxLen)}…`;
+  } catch {
+    return String(args).slice(0, maxLen);
+  }
+}
+
+function summarizeToolResult(result, maxLen = 200) {
+  if (result == null) return "";
+  if (typeof result === "string") return result.length <= maxLen ? result : `${result.slice(0, maxLen)}…`;
+  try {
+    const serialized = JSON.stringify(result);
+    return serialized.length <= maxLen ? serialized : `${serialized.slice(0, maxLen)}…`;
+  } catch {
+    return String(result).slice(0, maxLen);
+  }
+}
+
+function formatToolStartBlock(toolName, args) {
+  const argsSummary = summarizeToolArgs(args);
+  const lines = [`> 🧰 **${toolName}** — running`];
+  if (argsSummary) lines.push(`> \`${argsSummary}\``);
+  return `${lines.join("\n")}\n\n`;
+}
+
+function formatToolDoneBlock(toolName, elapsedMs, ok, result) {
+  const status = ok === null ? "done" : ok ? "ok" : "failed";
+  const lines = [`> 🧰 **${toolName}** — ${status}${elapsedMs ? ` (${elapsedMs})` : ""}`];
+  const resultSummary = summarizeToolResult(result);
+  if (resultSummary) lines.push(`> \`${resultSummary}\``);
+  return `${lines.join("\n")}\n\n`;
 }
 
 // Prevent EPIPE from stderr (e.g. when gateway restarts and closes the pipe) from crashing the process.
@@ -156,8 +193,37 @@ const SCRIPT_HASH = process.env.CURSOR_PROXY_SCRIPT_HASH || computeScriptHash();
 
 // ── Cursor path auto-detection ──────────────────────────────────────────────
 
+function isCursorAgentBinary(cursorPath) {
+  if (!cursorPath || !existsSync(cursorPath)) return false;
+
+  try {
+    const resolved = realpathSync(cursorPath);
+    if (resolved.includes("cursor-agent")) return true;
+  } catch {
+    /* keep validating via --help */
+  }
+
+  try {
+    const output = execSync(`"${cursorPath}" --help`, {
+      encoding: "utf-8",
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return output.includes("Start the Cursor Agent")
+      || output.includes("--list-models")
+      || output.includes("stream-json");
+  } catch (e) {
+    const combined = `${e.stdout || ""}${e.stderr || ""}`;
+    return combined.includes("Start the Cursor Agent")
+      || combined.includes("--list-models")
+      || combined.includes("stream-json");
+  }
+}
+
 function detectCursorPath() {
-  if (process.env.CURSOR_PATH) return process.env.CURSOR_PATH;
+  if (process.env.CURSOR_PATH && isCursorAgentBinary(process.env.CURSOR_PATH)) {
+    return process.env.CURSOR_PATH;
+  }
 
   const home = homedir();
   const isWin = process.platform === "win32";
@@ -169,21 +235,27 @@ function detectCursorPath() {
         join(home, ".cursor", "bin", "agent.exe"),
         join(home, ".cursor", "bin", "agent.cmd"),
         join(home, ".local", "bin", "agent.exe"),
+        join(home, ".local", "bin", "cursor-agent.exe"),
       ]
     : [
+        join(home, ".local", "bin", "cursor-agent"),
         join(home, ".local", "bin", "agent"),
-        "/usr/local/bin/agent",
+        join(home, ".cursor", "bin", "cursor-agent"),
         join(home, ".cursor", "bin", "agent"),
+        "/usr/local/bin/cursor-agent",
+        "/usr/local/bin/agent",
       ];
 
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
+  for (const candidate of candidates) {
+    if (isCursorAgentBinary(candidate)) return candidate;
   }
 
   try {
-    const cmd = isWin ? "where agent 2>nul" : "which agent 2>/dev/null";
+    const cmd = isWin ? "where agent 2>nul" : "which -a agent 2>/dev/null";
     const result = execSync(cmd, { encoding: "utf-8", timeout: 3000 }).trim();
-    if (result && existsSync(result.split("\n")[0])) return result.split("\n")[0];
+    for (const line of [...new Set(result.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean))]) {
+      if (isCursorAgentBinary(line)) return line;
+    }
   } catch {}
 
   return "";
@@ -307,11 +379,12 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ── Smart chunked streaming ─────────────────────────────────────────────────
+// ── Fallback chunked streaming (bulk result events only) ────────────────────
 
 async function streamChunked(res, id, model, text) {
   const len = text.length;
-  if (len <= SHORT_TEXT_THRESHOLD) {
+  if (len === 0) return;
+  if (INSTANT_RESULT) {
     res.write(sseEvent(id, model, { content: text }));
     return;
   }
@@ -323,6 +396,11 @@ async function streamChunked(res, id, model, text) {
     res.write(sseEvent(id, model, { content: text.slice(i, i + chunkSize) }));
     if (i + chunkSize < len) await sleep(delayMs);
   }
+}
+
+async function streamAnswerContent(res, id, model, text) {
+  if (!text) return;
+  await streamChunked(res, id, model, text);
 }
 
 // ── Spawn cursor-agent ──────────────────────────────────────────────────────
@@ -402,8 +480,8 @@ function ensureStreamHeaders(res, streamState) {
 /**
  * forwardThinking modes (first principles):
  * - off: do not forward thinking; stream only assistant "text" and final result.
- * - content: thinking appears in message body as markdown blockquote ("> 💭 ..."); separator "---" before body; stream thinking as content deltas, then resultText with "\n\n---\n\n" prefix if no "text" deltas were received.
- * - reasoning_content: thinking in separate field (delta.reasoning_content / message.reasoning_content); stream thinking as reasoning_content deltas, then resultText as content (no separator).
+ * - content: thinking appears in message body as markdown blockquote ("> 💭 ..."); separator "---" before body; stream thinking as content deltas, then live "text" deltas; bulk "result" only if no text deltas (chunked when instantResult is false).
+ * - reasoning_content: thinking in separate field (delta.reasoning_content / message.reasoning_content); stream thinking as reasoning_content deltas, then live "text" deltas; bulk "result" as content fallback (no separator).
  */
 function processStreamOutput(child, { requestId, model, sessionKey, res, streamState }) {
   return new Promise((resolve) => {
@@ -444,16 +522,28 @@ function processStreamOutput(child, { requestId, model, sessionKey, res, streamS
         const tc = parsed.tool_call || {};
         const toolKey = Object.keys(tc)[0] || "unknown";
         if (parsed.subtype === "started") {
-          toolCalls.set(callId, { tool: toolKey, startTime: Date.now() });
           const args = tc[toolKey]?.args;
-          const argsSummary = args ? JSON.stringify(args).slice(0, 120) : "";
+          toolCalls.set(callId, { tool: toolKey, startTime: Date.now(), args });
+          const argsSummary = args ? summarizeToolArgs(args, 120) : "";
           log("info", `[${requestId}] tool:start ${toolKey}${argsSummary ? ` args=${argsSummary}` : ""} (call_id=${callId})`);
+          if (FORWARD_TOOLS) {
+            hasStreamedContent = true;
+            if (streamState) ensureStreamHeaders(res, streamState);
+            res.write(sseEvent(requestId, model, { content: formatToolStartBlock(toolKey, args) }));
+          }
         } else if (parsed.subtype === "completed") {
           const tracked = toolCalls.get(callId);
           const elapsed = tracked ? `${Date.now() - tracked.startTime}ms` : "?ms";
           const result = tc[toolKey]?.result;
           const ok = result ? !!result.success : null;
           log("info", `[${requestId}] tool:done  ${tracked?.tool || toolKey} ${elapsed}${ok !== null ? ` ok=${ok}` : ""} (call_id=${callId})`);
+          if (FORWARD_TOOLS) {
+            hasStreamedContent = true;
+            if (streamState) ensureStreamHeaders(res, streamState);
+            res.write(sseEvent(requestId, model, {
+              content: formatToolDoneBlock(tracked?.tool || toolKey, elapsed, ok, result),
+            }));
+          }
           toolCalls.delete(callId);
         }
         return;
@@ -501,7 +591,7 @@ function processStreamOutput(child, { requestId, model, sessionKey, res, streamS
       }
 
       if (type === "result" && typeof parsed.result === "string") {
-        resultText = parsed.result;
+        if (!hasStreamedTextContent) resultText = parsed.result;
       }
     });
 
@@ -543,7 +633,7 @@ async function processStreamOutputWithTimeout(child, opts, effectiveTimeout) {
   }
 }
 
-// ── Streaming handler (real-time thinking + smart chunked result) ────────────
+// ── Streaming handler (live text deltas + chunked bulk-result fallback) ─────
 
 function resolveSessionKey(body, req) {
   if (body._openclaw_session_id) return { key: body._openclaw_session_id, src: "body._openclaw" };
@@ -679,23 +769,14 @@ async function handleStream(req, res, body) {
     if (canRetry) log("info", `[${requestId}] retry succeeded`);
     if (result.resultText && !result.hasStreamedContent) {
       ensureStreamHeaders(res, streamState);
-      if (INSTANT_RESULT) {
-        res.write(sseEvent(requestId, model, { content: result.resultText }));
-      } else {
-        await streamChunked(res, requestId, model, result.resultText);
-      }
+      await streamAnswerContent(res, requestId, model, result.resultText);
     } else if (result.resultText && result.hasStreamedContent && result.hasStreamedTextContent) {
-      log("debug", `[${requestId}] result received after text deltas, skipping duplicate`);
+      log("debug", `[${requestId}] bulk result after live text deltas, skipping duplicate`);
     } else if (result.resultText && result.hasStreamedContent && !result.hasStreamedTextContent) {
       ensureStreamHeaders(res, streamState);
       const separator = result.hasStreamedThinkingContent ? THINKING_BODY_SEPARATOR : "";
-      const contentToSend = separator + result.resultText;
-      if (INSTANT_RESULT) {
-        res.write(sseEvent(requestId, model, { content: contentToSend }));
-      } else {
-        await streamChunked(res, requestId, model, contentToSend);
-      }
-      log("debug", `[${requestId}] streamed result as content${result.hasStreamedThinkingContent ? " (after thinking, with --- separator)" : " (only reasoning_content was streamed before)"}`);
+      await streamAnswerContent(res, requestId, model, separator + result.resultText);
+      log("debug", `[${requestId}] streamed bulk result${result.hasStreamedThinkingContent ? " (after thinking, with --- separator)" : " (only reasoning_content was streamed before)"}${INSTANT_RESULT ? " instantly" : " via chunked fallback"}`);
     }
   }
 
@@ -969,7 +1050,7 @@ function onListenSuccess() {
     writeFileSync(PROXY_PID_FILE, String(process.pid), "utf-8");
   } catch {}
   log("info", `Config file: ${openclawPath}`);
-  log("info", `Config (plugin ${PLUGIN_ID}): forwardThinking=${String(RAW_FORWARD_THINKING || "off")}, instantResult=${INSTANT_RESULT}, requestTimeout=${REQUEST_TIMEOUT_MS}, streamSpeed=${TARGET_CHARS_PER_SEC}, maxConsecutiveFailures=${MAX_CONSECUTIVE_FAILURES}, maxConsecutiveTimeouts=${MAX_CONSECUTIVE_TIMEOUTS}`);
+  log("info", `Config (plugin ${PLUGIN_ID}): forwardThinking=${String(RAW_FORWARD_THINKING || "off")}, forwardTools=${FORWARD_TOOLS ? "content" : "off"}, instantResult=${INSTANT_RESULT}, requestTimeout=${REQUEST_TIMEOUT_MS}, streamSpeed=${TARGET_CHARS_PER_SEC}, maxConsecutiveFailures=${MAX_CONSECUTIVE_FAILURES}, maxConsecutiveTimeouts=${MAX_CONSECUTIVE_TIMEOUTS}`);
   log("info", `Cursor streaming proxy on http://127.0.0.1:${PORT}`);
   if (CURSOR_PATH) {
     log("info", `Cursor agent: ${CURSOR_PATH}`);

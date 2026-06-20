@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Ship compiled plugin runtime output (`dist/index.js`) in npm packages so `openclaw plugins install openclaw-cursor-brain` works on OpenClaw 2026.6+.
+- Resolve plugin root correctly when the runtime entry is loaded from `dist/`.
+- Prefer Cursor Agent over other `agent` binaries on PATH (e.g. Grok) when auto-detecting `cursorPath`.
+- Defer interactive install setup so `register()` stays synchronous for OpenClaw's compiled runtime loader.
+- Skip interactive model selection during `plugins install`; OpenClaw aborts with "config changed since last load" after register writes `openclaw.json`. Use `openclaw cursor-brain setup` instead.
+- Skip all `openclaw.json` writes during `plugins install`; provider/model sync runs on gateway restart or `cursor-brain setup`.
+
 ## [1.5.4] - 2026-03-14
 
 ### Changed

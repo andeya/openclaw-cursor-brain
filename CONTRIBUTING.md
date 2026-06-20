@@ -8,6 +8,7 @@ Thank you for your interest in contributing! Here's how to get started.
 git clone https://github.com/andeya/openclaw-cursor-brain.git
 cd openclaw-cursor-brain
 npm install
+npm run build
 ```
 
 ### Local Testing

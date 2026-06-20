@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "fs";
 import { dirname, join } from "path";
 import { execSync } from "child_process";
 import type { PluginLogger } from "openclaw/plugin-sdk";
 import {
   getCursorMcpConfigPath,
   getCursorSearchPaths,
-  getWhichCommand,
+  getWhichAllCommand,
   MCP_SERVER_ID,
   OPENCLAW_CONFIG_PATH,
   type OutputFormat,
@@ -36,18 +36,54 @@ export type SetupResult = {
   warnings: string[];
 };
 
-export function detectCursorPath(overridePath?: string): string | null {
-  if (overridePath && existsSync(overridePath)) return overridePath;
+export function isCursorAgentBinary(cursorPath: string): boolean {
+  if (!cursorPath || !existsSync(cursorPath)) return false;
 
   try {
-    const which = execSync(getWhichCommand(), { encoding: "utf-8" }).trim();
-    const first = which.split("\n")[0]?.trim();
-    if (first && existsSync(first)) return first;
-  } catch { /* not on PATH */ }
-
-  for (const p of getCursorSearchPaths()) {
-    if (existsSync(p)) return p;
+    const resolved = realpathSync(cursorPath);
+    if (resolved.includes("cursor-agent")) return true;
+  } catch {
+    /* keep validating via --help */
   }
+
+  try {
+    const output = execSync(`"${cursorPath}" --help`, {
+      encoding: "utf-8",
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return output.includes("Start the Cursor Agent")
+      || output.includes("--list-models")
+      || output.includes("stream-json");
+  } catch (e: any) {
+    const combined = `${e.stdout || ""}${e.stderr || ""}`;
+    return combined.includes("Start the Cursor Agent")
+      || combined.includes("--list-models")
+      || combined.includes("stream-json");
+  }
+}
+
+function listAgentCandidatesFromPath(): string[] {
+  try {
+    const output = execSync(getWhichAllCommand(), { encoding: "utf-8" }).trim();
+    if (!output) return [];
+    return [...new Set(output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+  } catch {
+    return [];
+  }
+}
+
+export function detectCursorPath(overridePath?: string): string | null {
+  if (overridePath && isCursorAgentBinary(overridePath)) return overridePath;
+
+  for (const candidate of getCursorSearchPaths()) {
+    if (isCursorAgentBinary(candidate)) return candidate;
+  }
+
+  for (const candidate of listAgentCandidatesFromPath()) {
+    if (isCursorAgentBinary(candidate)) return candidate;
+  }
+
   return null;
 }
 
