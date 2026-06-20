@@ -3,6 +3,7 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync, mkdirSync, cpSync } from "fs";
 import { createHash } from "crypto";
 import { join, resolve, dirname, isAbsolute } from "path";
+import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { execSync, spawn, spawnSync } from "child_process";
 import { createRequire } from "module";
@@ -25,9 +26,21 @@ const HEALTH_CHECK_INTERVAL = 60000; // 60s
 
 // @clack/prompts lives in openclaw's node_modules; follow the bin symlink to resolve
 let _clack: any;
+function resolvePluginRootFromModule(): string {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  if (existsSync(join(moduleDir, "package.json"))) {
+    return moduleDir;
+  }
+  const parentDir = join(moduleDir, "..");
+  if (existsSync(join(parentDir, "package.json"))) {
+    return parentDir;
+  }
+  return moduleDir;
+}
+
 function loadClack() {
   if (_clack) return _clack;
-  let entry = process.argv[1] || __filename;
+  let entry = process.argv[1] || fileURLToPath(import.meta.url);
   try { entry = realpathSync(entry); } catch {}
   _clack = createRequire(entry)("@clack/prompts");
   return _clack;
@@ -783,7 +796,7 @@ function resolvePluginDir(api: OpenClawPluginApi): string {
 /** Load configSchema from openclaw.plugin.json so the host shows all options (e.g. requestTimeout, proxy) in config UI; fallback to empty if manifest missing. */
 function loadPluginConfigSchema(): Record<string, unknown> {
   try {
-    const pluginDir = dirname(createRequire(import.meta.url).resolve("./package.json"));
+    const pluginDir = resolvePluginRootFromModule();
     const manifestPath = join(pluginDir, "openclaw.plugin.json");
     if (!existsSync(manifestPath)) return emptyPluginConfigSchema();
     const raw = readFileSync(manifestPath, "utf-8");

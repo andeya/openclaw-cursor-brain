@@ -26,12 +26,24 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
     "uninstall": "node scripts/uninstall.mjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
   "files": [
+    "dist/",
     "index.ts",
     "src/",
     "scripts/",
@@ -49,6 +61,9 @@
   "openclaw": {
     "extensions": [
       "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
     ],
     "install": {
       "npmSpec": "openclaw-cursor-brain",

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Ship compiled plugin runtime output (`dist/index.js`) in npm packages so `openclaw plugins install openclaw-cursor-brain` works on OpenClaw 2026.6+.
+- Resolve plugin root correctly when the runtime entry is loaded from `dist/`.
+
 ## [1.5.4] - 2026-03-14
 
 ### Changed
