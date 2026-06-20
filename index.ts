@@ -496,6 +496,43 @@ function cleanupStaleCursorLocalAliasProviders(draft: Record<string, any>): bool
   return changed;
 }
 
+function applyTuiFeedbackDefaults(draft: Record<string, any>): boolean {
+  let changed = false;
+  const agents = draft.agents || {};
+  const defaults = agents.defaults || {};
+  const legacyUntouched = defaults.verboseDefault == null;
+
+  if (legacyUntouched) {
+    defaults.verboseDefault = "on";
+    defaults.reasoningDefault = "stream";
+    changed = true;
+  } else if (defaults.reasoningDefault == null) {
+    defaults.reasoningDefault = "stream";
+    changed = true;
+  }
+
+  if (changed) {
+    agents.defaults = defaults;
+    draft.agents = agents;
+  }
+
+  const plugins = draft.plugins || {};
+  const entries = plugins.entries || {};
+  const entry = entries[PLUGIN_ID] || {};
+  const config = { ...(entry.config || {}) } as Record<string, unknown>;
+  const currentInstant = config.instantResult;
+  if (currentInstant === undefined || (legacyUntouched && currentInstant === true)) {
+    config.instantResult = false;
+    entry.config = config;
+    entries[PLUGIN_ID] = entry;
+    plugins.entries = entries;
+    draft.plugins = plugins;
+    changed = true;
+  }
+
+  return changed;
+}
+
 function applyDefaultAgentModel(
   draft: Record<string, any>,
   discovered: CursorModel[],
@@ -516,15 +553,19 @@ function applyDefaultAgentModel(
     existingFallbacks.length !== normalizedFallbacks.length ||
     existingFallbacks.some((f, i) => f !== normalizedFallbacks[i]);
 
-  if (!shouldFixPrimary && !shouldFixFallbacks) return false;
+  let changed = false;
+  if (shouldFixPrimary || shouldFixFallbacks) {
+    const agents = draft.agents || {};
+    const defaults = agents.defaults || {};
+    defaults.model = { primary: normalizedPrimary, fallbacks: normalizedFallbacks };
+    agents.defaults = defaults;
+    draft.agents = agents;
+    cleanupStaleCursorLocalAliasProviders(draft);
+    changed = true;
+  }
 
-  const agents = draft.agents || {};
-  const defaults = agents.defaults || {};
-  defaults.model = { primary: normalizedPrimary, fallbacks: normalizedFallbacks };
-  agents.defaults = defaults;
-  draft.agents = agents;
-  cleanupStaleCursorLocalAliasProviders(draft);
-  return true;
+  if (applyTuiFeedbackDefaults(draft)) changed = true;
+  return changed;
 }
 
 function syncProviderToConfig(

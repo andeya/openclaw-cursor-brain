@@ -53,8 +53,8 @@
       },
       "instantResult": {
         "type": "boolean",
-        "default": true,
-        "description": "Send batch results instantly. Proxy reads from openclaw.json."
+        "default": false,
+        "description": "Send batch results instantly. When false, chunked streaming gives earlier TUI feedback. Proxy reads from openclaw.json."
       },
       "forwardThinking": {
         "type": "string",

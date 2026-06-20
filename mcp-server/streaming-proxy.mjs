@@ -68,7 +68,7 @@ const RAW_FORWARD_THINKING = fromConfig("forwardThinking", "content", (v) => {
   return false; // "off", "false", or unknown
 });
 const FORWARD_THINKING = RAW_FORWARD_THINKING !== false;
-const INSTANT_RESULT = fromConfig("instantResult", true, (v) => v !== false && v !== "false");
+const INSTANT_RESULT = fromConfig("instantResult", false, (v) => v !== false && v !== "false");
 const TARGET_CHARS_PER_SEC = parseInt(fromConfig("streamSpeed", "200"), 10) || 200;
 const SHORT_TEXT_THRESHOLD = 100;
 const MIN_TIMEOUT_MS = 60_000;
