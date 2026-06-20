@@ -875,7 +875,7 @@ const plugin = {
     const config = api.config;
     const pluginConfig = api.pluginConfig || {};
 
-    if (!isUninstalling) {
+    if (!isUninstalling && !isReadOnlyCliCmd) {
       const ctx: SetupContext = {
         pluginDir,
         gatewayPort: config.gateway?.port ?? 18789,
@@ -1141,6 +1141,7 @@ const plugin = {
           console.log(`  Gateway:          http://127.0.0.1:${config.gateway?.port ?? 18789}`);
           console.log(`  MCP config:       ${getCursorMcpConfigPath()}`);
           console.log(`  Tool candidates:  ${toolCandidates} (from plugin sources)`);
+          process.exit(0);
         });
 
       prog
