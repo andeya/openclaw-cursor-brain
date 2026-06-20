@@ -29,6 +29,7 @@ declare module "openclaw/plugin-sdk" {
       handler: (ctx: { program: any }) => void,
       opts?: { commands?: string[] },
     ): void;
+    registrationMode?: string;
   }
 
   export function emptyPluginConfigSchema(): Record<string, unknown>;

@@ -853,7 +853,8 @@ const plugin = {
     const isUninstalling = isCursorBrainUninstallOrUpgrade;
     const isProxyCmd = /\bcursor-brain\s+proxy\b/.test(argv);
     const isSetupOnly = process.argv.includes("cursor-brain") && process.argv.includes("setup");
-    const isReadOnlyCliCmd = /\bcursor-brain\s+(doctor|status)\b/.test(argv);
+    const registrationMode = api.registrationMode;
+    const shouldRunActivationSetup = !isUninstalling && (registrationMode === "full" || isPluginsInstall);
 
     // Fix invalid source value on disk immediately so OpenClaw config validation won't overwrite
     if (!isPluginsInstall) {
@@ -875,7 +876,7 @@ const plugin = {
     const config = api.config;
     const pluginConfig = api.pluginConfig || {};
 
-    if (!isUninstalling && !isReadOnlyCliCmd) {
+    if (shouldRunActivationSetup) {
       const ctx: SetupContext = {
         pluginDir,
         gatewayPort: config.gateway?.port ?? 18789,
@@ -961,7 +962,7 @@ const plugin = {
       const effectiveCursorPath = result.cursorPath || detectCursorPath(pluginConfig.cursorPath as string | undefined);
       const effectiveOutputFormat =
         result.outputFormat ?? (effectiveCursorPath ? detectOutputFormat(effectiveCursorPath, pluginConfig.outputFormat as string | undefined) : undefined);
-      if (effectiveCursorPath && !isProxyCmd && !isPluginsInstall && !isSetupOnly && !isReadOnlyCliCmd) {
+      if (effectiveCursorPath && shouldRunActivationSetup && !isProxyCmd && !isPluginsInstall && !isSetupOnly) {
         const proxyOpts = {
           pluginDir,
           cursorPath: effectiveCursorPath,
