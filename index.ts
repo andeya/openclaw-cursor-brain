@@ -121,7 +121,7 @@ function computeFileHash(filePath: string): string {
   } catch { return "unknown"; }
 }
 
-/** Run interactive setup (model selection + plugin config) in the same process during install. Blocks until user completes; re-applies in setImmediate after core may overwrite. */
+/** Run interactive setup (model selection + plugin config) after register completes. */
 async function runInteractiveSetupInProcess(opts: {
   pluginDir: string;
   config: Record<string, any>;
@@ -172,6 +172,17 @@ async function runInteractiveSetupInProcess(opts: {
     gatewayRestartOutroShown = true;
     clack.outro("Run `openclaw gateway restart` (or restart your gateway) to apply changes.");
   }
+}
+
+function scheduleInteractiveSetupInProcess(
+  opts: Parameters<typeof runInteractiveSetupInProcess>[0],
+  logger: { warn: (msg: string) => void },
+) {
+  setImmediate(() => {
+    void runInteractiveSetupInProcess(opts).catch((e: any) => {
+      logger.warn(`Interactive setup failed: ${e?.message ?? String(e)}`);
+    });
+  });
 }
 
 function readPackageVersion(dir: string): string {
@@ -915,7 +926,9 @@ const plugin = {
             } catch (e: any) {
               api.logger.warn(`Could not set default model: ${e?.message ?? String(e)}`);
             }
-            if (runInteractiveSetup) return runInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort });
+            if (runInteractiveSetup) {
+              scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
+            }
           } else {
             // Read fresh config from disk rather than using api.config snapshot,
             // which may contain stale plugins data (e.g. during install subprocess
@@ -967,13 +980,19 @@ const plugin = {
                 writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(patch, null, 2) + "\n");
                 api.logger.info(`Provider "${PROVIDER_ID}" synced (${discovered.length} models, port ${proxyPort})`);
                 doSyncInstallRecord();
-                if (runInteractiveSetup) return runInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort });
-                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
+                if (runInteractiveSetup) {
+                  scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
+                } else {
+                  setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
+                }
               } catch (err: any) {
                 api.logger.warn(`Could not write config: ${err?.message ?? String(err)}`);
                 doSyncInstallRecord();
-                if (runInteractiveSetup) return runInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort });
-                setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
+                if (runInteractiveSetup) {
+                  scheduleInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort }, api.logger);
+                } else {
+                  setImmediate(() => fixInstallRecordSourceOnDisk(pluginDir));
+                }
               }
             } else {
               api.runtime.config.writeConfigFile(patch as any).then(() => {
