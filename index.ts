@@ -147,7 +147,6 @@ function compareSemver(a: string, b: string): number {
  */
 const PLUGIN_CONFIG_EXCLUDE_KEYS = new Set(["model", "fallbackModel"]);
 
-/** Build minimal env for proxy child to avoid spreading full process.env (reduces security-scan "env + network" warning). */
 function buildProxyChildEnv(vars: {
   CURSOR_PATH: string;
   CURSOR_WORKSPACE_DIR: string;
@@ -170,6 +169,86 @@ function buildProxyChildEnv(vars: {
     env.TEMP = e.TEMP ?? e.TMP ?? "";
   }
   return env;
+}
+
+function stopStreamingProxy(port: number): void {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+    healthCheckTimer = null;
+  }
+  proxyRestartScheduled = false;
+  if (proxyChild) {
+    try { proxyChild.kill("SIGKILL"); } catch { /* process may already be dead */ }
+    proxyChild = null;
+  }
+  try {
+    if (existsSync(CURSOR_PROXY_PID_PATH)) {
+      const pidStr = readFileSync(CURSOR_PROXY_PID_PATH, "utf-8").trim();
+      const pid = parseInt(pidStr, 10);
+      if (Number.isFinite(pid) && pid > 0) killPidBySubprocess(pid);
+      rmSync(CURSOR_PROXY_PID_PATH, { force: true });
+    }
+  } catch { /* best-effort */ }
+  killPortProcess(port, "SIGKILL");
+}
+
+function spawnDetachedStreamingProxy(params: {
+  pluginDir: string;
+  cursorPath: string;
+  workspaceDir: string;
+  port: number;
+  outputFormat: OutputFormat;
+}): number | undefined {
+  const proxyScript = join(params.pluginDir, "mcp-server", "streaming-proxy.mjs");
+  if (!existsSync(proxyScript)) return undefined;
+  const child = spawn("node", [proxyScript], {
+    env: buildProxyChildEnv({
+      CURSOR_PATH: params.cursorPath,
+      CURSOR_WORKSPACE_DIR: params.workspaceDir,
+      CURSOR_PROXY_PORT: String(params.port),
+      CURSOR_OUTPUT_FORMAT: params.outputFormat,
+      CURSOR_PROXY_SCRIPT_HASH: computeFileHash(proxyScript),
+    }),
+    stdio: "ignore",
+    detached: true,
+  });
+  child.unref();
+  return child.pid;
+}
+
+function ensureStreamingProxyManaged(opts: {
+  pluginDir: string;
+  cursorPath: string;
+  workspaceDir: string;
+  port: number;
+  outputFormat: OutputFormat;
+  logger: any;
+}): void {
+  proxyChild = null;
+  const proxyRunning = isProxyRunning(opts.port);
+  let needRestart = !proxyRunning;
+
+  if (proxyRunning) {
+    const health = fetchProxyHealth(opts.port, 3000);
+    if (health) {
+      const proxyScript = join(opts.pluginDir, "mcp-server", "streaming-proxy.mjs");
+      const installedHash = computeFileHash(proxyScript);
+      if (health.scriptHash !== installedHash) {
+        opts.logger.info(`Proxy script changed (running=${health.scriptHash}, installed=${installedHash}), restarting...`);
+        needRestart = true;
+      }
+    } else {
+      needRestart = true;
+    }
+  }
+
+  if (needRestart) {
+    startProxy(opts);
+    return;
+  }
+
+  opts.logger.info(`Adopting proxy on port ${opts.port} — killing and restarting under this gateway`);
+  startProxy(opts);
 }
 
 /**
@@ -851,8 +930,6 @@ const plugin = {
       process.argv.includes("cursor-brain") &&
       process.argv.some((a) => a === "uninstall" || a === "upgrade");
     const isUninstalling = isCursorBrainUninstallOrUpgrade;
-    const isProxyCmd = /\bcursor-brain\s+proxy\b/.test(argv);
-    const isSetupOnly = process.argv.includes("cursor-brain") && process.argv.includes("setup");
     const registrationMode = api.registrationMode;
     const shouldRunActivationSetup = !isUninstalling && (registrationMode === "full" || isPluginsInstall);
 
@@ -875,6 +952,31 @@ const plugin = {
     const pluginDir = resolvePluginDir(api);
     const config = api.config;
     const pluginConfig = api.pluginConfig || {};
+
+    if (!isUninstalling) {
+      const proxyPort = parseProxyPort(pluginConfig.proxyPort);
+      api.registerService?.({
+        id: "cursor-brain-streaming-proxy",
+        start: async (ctx) => {
+          const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
+          if (!cursorPath) {
+            ctx.logger.warn("Cursor Agent not found; streaming proxy not started");
+            return;
+          }
+          ensureStreamingProxyManaged({
+            pluginDir,
+            cursorPath,
+            workspaceDir: ctx.workspaceDir ?? (config.agents as any)?.defaults?.workspace ?? "",
+            port: proxyPort,
+            outputFormat: detectOutputFormat(cursorPath, pluginConfig.outputFormat as string | undefined),
+            logger: ctx.logger,
+          });
+        },
+        stop: async () => {
+          stopStreamingProxy(proxyPort);
+        },
+      });
+    }
 
     if (shouldRunActivationSetup) {
       const ctx: SetupContext = {
@@ -955,51 +1057,6 @@ const plugin = {
           }
         } else {
           doSyncInstallRecord();
-        }
-      }
-
-      // On gateway restart we want proxy to start: use result.cursorPath or fallback to config so proxy always comes up when not in install/setup/uninstall.
-      const effectiveCursorPath = result.cursorPath || detectCursorPath(pluginConfig.cursorPath as string | undefined);
-      const effectiveOutputFormat =
-        result.outputFormat ?? (effectiveCursorPath ? detectOutputFormat(effectiveCursorPath, pluginConfig.outputFormat as string | undefined) : undefined);
-      if (effectiveCursorPath && shouldRunActivationSetup && !isProxyCmd && !isPluginsInstall && !isSetupOnly) {
-        const proxyOpts = {
-          pluginDir,
-          cursorPath: effectiveCursorPath,
-          workspaceDir: ctx.workspaceDir,
-          port: proxyPort,
-          outputFormat: effectiveOutputFormat ?? ("stream-json" as OutputFormat),
-          logger: api.logger,
-        };
-
-        // Don't trust in-memory proxyChild when register() runs: on any platform (macOS LaunchAgent,
-        // Linux systemd, Windows service), gateway "restart" may reload in-place (same process).
-        // Re-adopt whatever is on the port so proxy is owned by this process on all platforms.
-        proxyChild = null;
-
-        const proxyRunning = isProxyRunning(proxyPort);
-        let needRestart = !proxyRunning;
-
-        if (proxyRunning) {
-          const health = fetchProxyHealth(proxyPort, 3000);
-          if (health) {
-            const proxyScript = join(pluginDir, "mcp-server", "streaming-proxy.mjs");
-            const installedHash = computeFileHash(proxyScript);
-            if (health.scriptHash !== installedHash) {
-              api.logger.info(`Proxy script changed (running=${health.scriptHash}, installed=${installedHash}), restarting...`);
-              needRestart = true;
-            }
-          } else {
-            needRestart = true;
-          }
-        }
-
-        if (needRestart) {
-          startProxy(proxyOpts);
-        } else {
-          // Proxy is on port; we cleared proxyChild so we always adopt (kill + start) and own the process.
-          api.logger.info(`Adopting proxy on port ${proxyPort} — killing and restarting under this gateway`);
-          startProxy(proxyOpts);
         }
       }
     }
@@ -1406,17 +1463,47 @@ const plugin = {
         .description("Manage the streaming proxy process");
 
       proxyCmd
-        .action(() => {
+        .action(async () => {
           const proxyPort = parseProxyPort(pluginConfig.proxyPort);
           let up = false;
           let pid = "";
           let sessions = "";
-          const health = fetchProxyHealth(proxyPort);
+          let health = fetchProxyHealth(proxyPort);
           if (health) {
             up = health.status === "ok" || health.status === "degraded";
             sessions = String(health.sessions ?? "?");
           }
-          if (up) {
+
+          if (!up) {
+            const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
+            if (!cursorPath) {
+              console.error("Cannot start proxy: cursor-agent not found.");
+              process.exit(1);
+            }
+            const startedPid = spawnDetachedStreamingProxy({
+              pluginDir,
+              cursorPath,
+              workspaceDir: (config.agents as any)?.defaults?.workspace ?? "",
+              port: proxyPort,
+              outputFormat: detectOutputFormat(cursorPath, pluginConfig.outputFormat as string | undefined),
+            });
+            if (!startedPid) {
+              console.error("Cannot start proxy: streaming-proxy.mjs not found.");
+              process.exit(1);
+            }
+            for (let i = 0; i < 10; i++) {
+              await new Promise((r) => setTimeout(r, 500));
+              health = fetchProxyHealth(proxyPort);
+              if (health && (health.status === "ok" || health.status === "degraded")) break;
+            }
+            if (health) {
+              up = health.status === "ok" || health.status === "degraded";
+              sessions = String(health.sessions ?? "?");
+              pid = String(startedPid);
+            }
+          }
+
+          if (up && !pid) {
             try {
               if (process.platform === "win32") {
                 const out = execSync(`netstat -ano | findstr :${proxyPort} | findstr LISTENING`, {
@@ -1434,6 +1521,11 @@ const plugin = {
           if (pid) console.log(`  PID:       ${pid}`);
           if (sessions) console.log(`  Sessions:  ${sessions}`);
           console.log(`  Log file:  ${CURSOR_PROXY_LOG_PATH}`);
+          if (!up) {
+            console.log("\n  Proxy failed to start. Try: openclaw cursor-brain proxy restart");
+            console.log("  Gateway-managed proxy starts automatically after: openclaw gateway restart");
+          }
+          process.exit(up ? 0 : 1);
         });
 
       proxyCmd
@@ -1471,14 +1563,7 @@ const plugin = {
           const cursorPath = detectCursorPath(pluginConfig.cursorPath as string | undefined);
           if (!cursorPath) {
             console.error("Cannot restart: cursor-agent not found.");
-            process.exitCode = 1;
-            return;
-          }
-          const proxyScript = join(pluginDir, "mcp-server", "streaming-proxy.mjs");
-          if (!existsSync(proxyScript)) {
-            console.error(`Cannot restart: proxy script not found at ${proxyScript}`);
-            process.exitCode = 1;
-            return;
+            process.exit(1);
           }
 
           if (isProxyRunning(proxyPort)) {
@@ -1487,20 +1572,19 @@ const plugin = {
             try { if (existsSync(CURSOR_PROXY_PID_PATH)) rmSync(CURSOR_PROXY_PID_PATH, { force: true }); } catch { /* best-effort remove PID file */ }
           }
 
-          const outputFormat = detectOutputFormat(cursorPath, pluginConfig.outputFormat as string | undefined);
-          const child = spawn("node", [proxyScript], {
-            env: buildProxyChildEnv({
-              CURSOR_PATH: cursorPath,
-              CURSOR_WORKSPACE_DIR: (config.agents as any)?.defaults?.workspace ?? "",
-              CURSOR_PROXY_PORT: String(proxyPort),
-              CURSOR_OUTPUT_FORMAT: outputFormat,
-              CURSOR_PROXY_SCRIPT_HASH: computeFileHash(proxyScript),
-            }),
-            stdio: "ignore",
-            detached: true,
+          const pid = spawnDetachedStreamingProxy({
+            pluginDir,
+            cursorPath,
+            workspaceDir: (config.agents as any)?.defaults?.workspace ?? "",
+            port: proxyPort,
+            outputFormat: detectOutputFormat(cursorPath, pluginConfig.outputFormat as string | undefined),
           });
-          child.unref();
-          console.log(`Proxy restarted on port ${proxyPort} (pid ${child.pid}).`);
+          if (!pid) {
+            console.error(`Cannot restart: proxy script not found in ${join(pluginDir, "mcp-server")}`);
+            process.exit(1);
+          }
+          console.log(`Proxy restarted on port ${proxyPort} (pid ${pid}).`);
+          process.exit(0);
         });
 
       proxyCmd

@@ -29,6 +29,19 @@ declare module "openclaw/plugin-sdk" {
       handler: (ctx: { program: any }) => void,
       opts?: { commands?: string[] },
     ): void;
+    registerService?(service: {
+      id: string;
+      start: (ctx: {
+        config: Record<string, any>;
+        workspaceDir?: string;
+        logger: PluginLogger;
+      }) => void | Promise<void>;
+      stop?: (ctx: {
+        config: Record<string, any>;
+        workspaceDir?: string;
+        logger: PluginLogger;
+      }) => void | Promise<void>;
+    }): void;
     registrationMode?: string;
   }
 
