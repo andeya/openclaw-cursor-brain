@@ -523,11 +523,17 @@ function applyTuiFeedbackDefaults(draft: Record<string, any>): boolean {
   const currentInstant = config.instantResult;
   if (currentInstant === undefined || (legacyUntouched && currentInstant === true)) {
     config.instantResult = false;
+    changed = true;
+  }
+  if (config.forwardTools == null) {
+    config.forwardTools = "content";
+    changed = true;
+  }
+  if (changed) {
     entry.config = config;
     entries[PLUGIN_ID] = entry;
     plugins.entries = entries;
     draft.plugins = plugins;
-    changed = true;
   }
 
   return changed;

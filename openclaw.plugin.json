@@ -54,7 +54,7 @@
       "instantResult": {
         "type": "boolean",
         "default": false,
-        "description": "Send batch results instantly. When false, chunked streaming gives earlier TUI feedback. Proxy reads from openclaw.json."
+        "description": "Send bulk result events instantly. Answer text deltas always stream live; when false, a single final result event is replayed in chunks (~streamSpeed chars/sec). Proxy reads from openclaw.json."
       },
       "forwardThinking": {
         "type": "string",
@@ -66,10 +66,19 @@
         "default": "content",
         "description": "How to stream Cursor's thinking output. off: drop (not sent). content: send as normal content, markdown blockquote + \"---\" before reply (OpenClaw streaming cards). reasoning_content: send in the reasoning_content field (OpenAI-style). Proxy reads from openclaw.json."
       },
+      "forwardTools": {
+        "type": "string",
+        "enum": [
+          "off",
+          "content"
+        ],
+        "default": "content",
+        "description": "How to stream Cursor MCP tool invocations. off: proxy logs only. content: stream tool start/done as markdown blockquotes in the assistant message (visible in TUI while cursor-agent runs tools internally). Proxy reads from openclaw.json."
+      },
       "streamSpeed": {
         "type": "number",
         "default": 200,
-        "description": "Chunked streaming chars/sec when instantResult is false. Proxy reads from openclaw.json."
+        "description": "Fallback replay speed (chars/sec) for bulk result events when instantResult is false. Live text deltas ignore this. Proxy reads from openclaw.json."
       }
     }
   }
