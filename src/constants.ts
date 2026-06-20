@@ -37,17 +37,21 @@ export function getCursorSearchPaths(): string[] {
       join(home, ".cursor", "bin", "agent.exe"),
       join(home, ".cursor", "bin", "agent.cmd"),
       join(home, ".local", "bin", "agent.exe"),
+      join(home, ".local", "bin", "cursor-agent.exe"),
     ];
   }
   return [
+    join(home, ".local", "bin", "cursor-agent"),
     join(home, ".local", "bin", "agent"),
-    "/usr/local/bin/agent",
+    join(home, ".cursor", "bin", "cursor-agent"),
     join(home, ".cursor", "bin", "agent"),
+    "/usr/local/bin/cursor-agent",
+    "/usr/local/bin/agent",
   ];
 }
 
-export function getWhichCommand(): string {
-  return process.platform === "win32" ? "where agent 2>nul" : "which agent 2>/dev/null";
+export function getWhichAllCommand(): string {
+  return process.platform === "win32" ? "where agent 2>nul" : "which -a agent 2>/dev/null";
 }
 
 export type OutputFormat = "stream-json" | "json";

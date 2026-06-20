@@ -19,7 +19,7 @@ import http from "node:http";
 import { spawn, execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -156,8 +156,37 @@ const SCRIPT_HASH = process.env.CURSOR_PROXY_SCRIPT_HASH || computeScriptHash();
 
 // ── Cursor path auto-detection ──────────────────────────────────────────────
 
+function isCursorAgentBinary(cursorPath) {
+  if (!cursorPath || !existsSync(cursorPath)) return false;
+
+  try {
+    const resolved = realpathSync(cursorPath);
+    if (resolved.includes("cursor-agent")) return true;
+  } catch {
+    /* keep validating via --help */
+  }
+
+  try {
+    const output = execSync(`"${cursorPath}" --help`, {
+      encoding: "utf-8",
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return output.includes("Start the Cursor Agent")
+      || output.includes("--list-models")
+      || output.includes("stream-json");
+  } catch (e) {
+    const combined = `${e.stdout || ""}${e.stderr || ""}`;
+    return combined.includes("Start the Cursor Agent")
+      || combined.includes("--list-models")
+      || combined.includes("stream-json");
+  }
+}
+
 function detectCursorPath() {
-  if (process.env.CURSOR_PATH) return process.env.CURSOR_PATH;
+  if (process.env.CURSOR_PATH && isCursorAgentBinary(process.env.CURSOR_PATH)) {
+    return process.env.CURSOR_PATH;
+  }
 
   const home = homedir();
   const isWin = process.platform === "win32";
@@ -169,21 +198,27 @@ function detectCursorPath() {
         join(home, ".cursor", "bin", "agent.exe"),
         join(home, ".cursor", "bin", "agent.cmd"),
         join(home, ".local", "bin", "agent.exe"),
+        join(home, ".local", "bin", "cursor-agent.exe"),
       ]
     : [
+        join(home, ".local", "bin", "cursor-agent"),
         join(home, ".local", "bin", "agent"),
-        "/usr/local/bin/agent",
+        join(home, ".cursor", "bin", "cursor-agent"),
         join(home, ".cursor", "bin", "agent"),
+        "/usr/local/bin/cursor-agent",
+        "/usr/local/bin/agent",
       ];
 
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
+  for (const candidate of candidates) {
+    if (isCursorAgentBinary(candidate)) return candidate;
   }
 
   try {
-    const cmd = isWin ? "where agent 2>nul" : "which agent 2>/dev/null";
+    const cmd = isWin ? "where agent 2>nul" : "which -a agent 2>/dev/null";
     const result = execSync(cmd, { encoding: "utf-8", timeout: 3000 }).trim();
-    if (result && existsSync(result.split("\n")[0])) return result.split("\n")[0];
+    for (const line of [...new Set(result.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean))]) {
+      if (isCursorAgentBinary(line)) return line;
+    }
   } catch {}
 
   return "";

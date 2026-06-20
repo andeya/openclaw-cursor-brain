@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ship compiled plugin runtime output (`dist/index.js`) in npm packages so `openclaw plugins install openclaw-cursor-brain` works on OpenClaw 2026.6+.
 - Resolve plugin root correctly when the runtime entry is loaded from `dist/`.
+- Prefer Cursor Agent over other `agent` binaries on PATH (e.g. Grok) when auto-detecting `cursorPath`.
 
 ## [1.5.4] - 2026-03-14
 
