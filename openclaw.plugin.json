@@ -66,6 +66,16 @@
         "default": "content",
         "description": "How to stream Cursor's thinking output. off: drop (not sent). content: send as normal content, markdown blockquote + \"---\" before reply (OpenClaw streaming cards). reasoning_content: send in the reasoning_content field (OpenAI-style). Proxy reads from openclaw.json."
       },
+      "forwardSystemPrompt": {
+        "type": "boolean",
+        "default": true,
+        "description": "Forward OpenClaw system prompt (AGENTS/SOUL/etc.) into cursor-agent stdin on every request. Disable only for debugging. Env: CURSOR_FORWARD_SYSTEM_PROMPT=0."
+      },
+      "systemPromptMaxChars": {
+        "type": "number",
+        "default": 120000,
+        "description": "Max OpenClaw system prompt chars forwarded to cursor-agent (truncates beyond this). Env: CURSOR_SYSTEM_PROMPT_MAX_CHARS."
+      },
       "streamSpeed": {
         "type": "number",
         "default": 200,

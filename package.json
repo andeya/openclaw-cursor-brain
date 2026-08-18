@@ -1,17 +1,20 @@
 {
   "name": "openclaw-cursor-brain",
-  "version": "1.5.4",
-  "description": "Use Cursor as the AI brain for OpenClaw — connects all plugin tools via MCP with zero manual config.",
+  "version": "1.6.1",
+  "description": "Community-maintained fork: Use Cursor as the AI brain for OpenClaw — OpenClaw 2026.x compatible, per-agent workspace routing.",
   "type": "module",
   "license": "MIT",
   "author": "andeya <andeyalee@outlook.com>",
-  "homepage": "https://github.com/andeya/openclaw-cursor-brain#readme",
+  "contributors": [
+    "OpenClaw Community Maintainers"
+  ],
+  "homepage": "https://github.com/Mic-coder-Mic/openclaw-cursor-brainV2#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/andeya/openclaw-cursor-brain.git"
+    "url": "https://github.com/Mic-coder-Mic/openclaw-cursor-brainV2.git"
   },
   "bugs": {
-    "url": "https://github.com/andeya/openclaw-cursor-brain/issues"
+    "url": "https://github.com/Mic-coder-Mic/openclaw-cursor-brainV2/issues"
   },
   "keywords": [
     "openclaw",
@@ -27,11 +30,15 @@
     "node": ">=18.0.0"
   },
   "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "uninstall": "node scripts/uninstall.mjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
   "files": [
+    "dist/",
     "index.ts",
     "src/",
     "scripts/",
@@ -40,15 +47,27 @@
     "openclaw.plugin.json",
     "README.md",
     "README_ZH.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.24.0"
   },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.0"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
   "openclaw": {
     "extensions": [
       "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
     ],
     "install": {
       "npmSpec": "openclaw-cursor-brain",
@@ -57,7 +76,7 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^25.4.0",
-    "typescript": "^5.7.0"
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0"
   }
 }

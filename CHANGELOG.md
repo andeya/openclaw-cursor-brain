@@ -1,113 +1,41 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this community-maintained fork are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+This project is based on [andeya/openclaw-cursor-brain](https://github.com/andeya/openclaw-cursor-brain).
 
-## [1.5.4] - 2026-03-14
+## [1.6.1] - 2026-08-07
+
+### Added
+
+- **System prompt forwarding** in `streaming-proxy.mjs`: OpenClaw `system`/`developer` messages from `/v1/chat/completions` are prepended to cursor-agent stdin (config `forwardSystemPrompt`, default on; env `CURSOR_FORWARD_SYSTEM_PROMPT=0` to disable).
+- **`systemPromptMaxChars`** config (default 120000) with truncation logging.
+- **Session invalidation on persona change**: cursor `--resume` mapping cleared when the system prompt hash changes for a session key.
+- Self-tests for system extraction and stdin wrapping.
+- README / README_ZH documentation for system prompt forwarding.
+
+### Security / Privacy
+
+- Proxy self-test is config-independent again (generic temp dirs / `demo-agent` fixtures; no personal paths, phone numbers, or group JIDs).
+
+## [1.6.0] - 2026-08-03
+
+### Added
+
+- **Per-agent workspace routing** in `streaming-proxy.mjs`: each request resolves `cursor-agent` cwd from explicit headers/body, `agent:<id>:…` session keys, system-prompt workdir, channel bindings, then `agents.defaults.workspace`.
+- **Agent-scoped session keys** so Cursor `--resume` never crosses agents/workspaces.
+- **Doctor check** for per-agent workspace overrides in `openclaw.json`.
+- **Config-independent proxy self-test** via `CURSOR_PROXY_SELFTEST=1` (no personal paths or live config required).
 
 ### Changed
 
-- Version bump and release.
+- Compatibility fixes for **OpenClaw 2026.x** (gateway, plugin SDK, runtime context handling).
+- README fork notice and community maintenance notes.
 
-## [1.5.3] - 2026-03-14
+### Security / Privacy
 
-### Changed
+- Removed environment-specific self-test fixtures (personal paths, phone numbers, group JIDs) from the published source tree.
 
-- **forwardThinking** config: semantic string enum `"off"` | `"content"` | `"reasoning_content"` (replaces boolean / `"true"`/`"false"`), default `"off"`; avoids config validation errors when value is string
-- Docs/README/technical-guide (EN/ZH): forwardThinking described with semantic values; proxy startup log shows `Thinking: off` when disabled
+## [1.5.4] - upstream baseline
 
-### Fixed
-
-- Streaming proxy: removed duplicate `recordTimeout()` call when `!hasContent` and headers already sent (was double-counting consecutive timeouts)
-- EADDRINUSE on proxy restart: `server.listen` uses `reuseAddress: true`; gateway waits 300ms after port free before spawning proxy
-- Error handling: defensive `e?.message ?? String(e)` / `result.error?.message ?? String(result.error)` in index.ts, setup.ts, uninstall.mjs, streaming-proxy.mjs, server.mjs; doctor.ts mcp.json parse error uses `e: unknown`
-
-## [1.4.0] - 2026-03-05
-
-### Added
-
-- **Session-aware retry**: when `cursor-agent` returns empty result with an active `--resume` session, automatically clear the stale session and retry once without resume
-- **Consecutive failure watchdog**: proxy tracks consecutive empty responses; after 5 failures (configurable via `CURSOR_PROXY_MAX_CONSECUTIVE_FAILURES`), self-exits with code 2 to trigger gateway restart
-- **Enhanced `/v1/health`**: response now includes `consecutiveFailures`, `lastErrorTime`, and `lastErrorMsg` for diagnostics
-- **Gateway auto-restart**: proxy crash triggers automatic restart with exponential backoff (2s → 10s → 60s), max 3 attempts; counter resets after 5 minutes of stable operation
-- Refactored streaming handler: extracted `processStreamOutput` and `collectNonStreamOutput` helpers for cleaner retry flow
-
-## [1.3.4] - 2026-03-05
-
-### Added
-
-- Version display in CLI commands: `setup` shows current version in title, `upgrade` shows old → new version transition, `uninstall` shows version being removed
-- Extract `readPackageVersion()` helper to eliminate duplicated version-reading code
-
-### Fixed
-
-- `upgrade` with npm spec (e.g. `openclaw-cursor-brain`): source version displayed as `vunknown`; now gracefully falls back to showing the source name instead
-
-### Changed
-
-- Quick start in README (EN/ZH): removed separate `setup` step since `openclaw plugins install` auto-configures
-- Technical guide (EN/ZH) §6.1: installation instructions no longer require a separate `setup` run; added note that `setup` can be re-run to change model selection
-
-## [1.3.1] - 2026-03-05
-
-### Fixed
-
-- MCP server startup race condition: tool registration no longer depends on Gateway liveness probes; tools are registered immediately from disk-based SKILL.md candidates, with background verification for diagnostics only
-- Streaming proxy: `SHELL` env was hardcoded to `/bin/bash`, breaking `cursor-agent` spawn on Windows; now respects `process.env.SHELL` on Unix and omits it on Windows
-- Streaming proxy: SIGTERM/SIGINT now gracefully waits for active connections to close (10s timeout) instead of immediate `process.exit`
-- Default model selection: replaced hardcoded `sonnet-4.6` fallback with dynamic `isDefault` lookup from discovered models
-- Doctor check: plugin version "unknown" now correctly reports as a failure instead of a false positive
-- Replace `\n` with `<br/>` in Mermaid diagrams for correct rendering across platforms
-
-### Changed
-
-- Updated technical guide (EN/ZH): "Three-Phase Tool Discovery" rewritten as "Tool Discovery & Registration" with updated Mermaid diagrams reflecting disk-based immediate registration
-- Updated README (EN/ZH): tool auto-discovery feature description now reflects the new startup behavior
-- Backfilled CHANGELOG entries for versions 1.1.0, 1.2.0, and 1.3.0
-
-## [1.3.0] - 2026-03-05
-
-### Added
-
-- Technical design documents (English and Chinese)
-- `openclaw_skill` tool: full usage documentation with batch loading and cross-reference detection
-- Progressive disclosure: server instructions with capability briefs → capability summary in static tool descriptions → full SKILL.md via `openclaw_skill`
-- Brand logos (OpenClaw + Cursor) in README headers
-
-## [1.2.0] - 2026-03-05
-
-### Added
-
-- Session auto-derive from conversation metadata (sender/group/topic) embedded in user messages
-- Rich MCP server instructions: token extraction rules, action keys, parameter examples from SKILL.md
-- Proxy hardening: request body size limit (10 MB), per-request timeout, graceful client disconnect handling
-- Tool call logging with name, arguments summary, duration, and call ID
-
-## [1.1.0] - 2026-03-05
-
-### Added
-
-- Streaming proxy (`streaming-proxy.mjs`): OpenAI-compatible API wrapping `cursor-agent` with real-time SSE streaming
-- Session persistence to disk (`~/.openclaw/cursor-sessions.json`) with `--resume` reuse
-- Interactive model selection via `@clack/prompts` (single-select primary, multi-select ordered fallbacks)
-- Dynamic model discovery from `cursor-agent --list-models`
-- Proxy CLI commands: `proxy status/stop/restart/log`
-- Script hash-based auto-restart on upgrade (`scriptHash` in `/v1/health`)
-- Instant result delivery (`CURSOR_PROXY_INSTANT_RESULT`) and optional thinking forwarding (`CURSOR_PROXY_FORWARD_THINKING`)
-
-## [1.0.0] - 2026-03-04
-
-### Added
-
-- Initial release
-- MCP server with structured tool discovery (SKILL.md scanning + source file parsing)
-- Auto-detection of Cursor Agent CLI across macOS, Linux, and Windows
-- Idempotent setup: auto-configures `~/.cursor/mcp.json` and `openclaw.json` on gateway start
-- CLI commands: `setup`, `doctor`, `status`, `uninstall`, `upgrade`
-- Built-in MCP tools: `openclaw_invoke` (universal invoker) and `openclaw_discover` (live tool listing)
-- One-command uninstall with full configuration cleanup
-- One-command upgrade with automatic old version removal
-- Cross-platform support (macOS, Linux, Windows)
-- Agent skill file for Cursor integration
+Baseline from [andeya/openclaw-cursor-brain](https://github.com/andeya/openclaw-cursor-brain) v1.5.4.
