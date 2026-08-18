@@ -1,8 +1,10 @@
 <p align="center">
-  <a href="https://github.com/openclaw/openclaw"><img src="./doc/openclaw-logo.svg" width="96" height="96" alt="OpenClaw" style="vertical-align: middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://cursor.sh"><img src="./doc/cursor-logo.svg" width="80" height="80" alt="Cursor" style="vertical-align: middle"></a>
   <h1 align="center">openclaw-cursor-brain</h1>
+  <p align="center"><strong>社群維護分支 — 適配 OpenClaw 2026.x</strong></p>
+  <p align="center">
+    基於 <a href="https://github.com/andeya/openclaw-cursor-brain">andeya/openclaw-cursor-brain</a> fork 並持續維護，
+    支援最新 OpenClaw 與 <strong>per-agent workspace</strong> 路由。
+  </p>
   <p align="center">
     将 <a href="https://cursor.sh">Cursor</a> 作为 <a href="https://github.com/openclaw/openclaw">OpenClaw</a> 的 AI 大脑 — 原生调用所有插件工具
   </p>
@@ -14,11 +16,13 @@
     <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-%3E%3D18-green.svg" alt="Node.js >= 18"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <br/>
-    <a href="./README.md">English</a> | 中文 · <a href="./doc/technical-guide-zh.md">技术设计文档</a> · <a href="./doc/technical-guide-en.md">Technical Guide</a>
+    <a href="./README.md">English</a> | 中文 · <a href="./CHANGELOG.md">更新日志</a> · <a href="./CONTRIBUTING.md">贡献指南</a>
   </p>
 </p>
 
 ---
+
+> **Fork 说明：** 本仓库是 [andeya/openclaw-cursor-brain](https://github.com/andeya/openclaw-cursor-brain) 的社群维护分支。上游已不适配 OpenClaw 2026.x；本分支包含兼容性修复与 **per-agent workspace** 支持。详见 [CHANGELOG.md](./CHANGELOG.md)。
 
 **openclaw-cursor-brain** 是一个 [OpenClaw](https://github.com/openclaw/openclaw) 插件，将 [Cursor Agent CLI](https://cursor.sh) 作为实时流式 AI 后端，通过 [MCP](https://modelcontextprotocol.io) 连接所有插件工具，让 AI 原生调用飞书、Slack、GitHub 等能力。
 
@@ -141,6 +145,8 @@ flowchart TD
 - **工具调用日志** — proxy 记录每个工具调用的名称、参数摘要、耗时和 call ID，便于诊断
 - **工具自动发现** — 启动时从磁盘 SKILL.md 直接注册（不依赖 Gateway）；后台异步验证用于诊断；60s TTL 缓存
 - **Session 自动推导** — 自动从消息元数据（sender/group/topic）推导 session key，Gateway 无需显式传递 session ID
+- **Per-agent workspace** — 按 agent 解析 `cursor-agent` cwd（显式 workspace、session key、system-prompt 工作目录、channel binding、`agents.defaults.workspace`）；session 按 agent 隔离，`--resume` 不跨 workspace
+- **System prompt 转发** — OpenClaw 编译后的 system prompt（AGENTS/SOUL/IDENTITY/skills）在每次请求前写入 cursor-agent stdin（config `forwardSystemPrompt`，默认开启）。system prompt 变更时自动清除过期的 `--resume` session
 - **会话持久化** — cursor-agent 会话持久化到磁盘（`~/.openclaw/cursor-sessions.json`）；也支持通过 body 字段或 HTTP 头（`X-OpenClaw-Session-Id`、`X-Session-Id`）显式传递
 - **升级自动重启** — proxy 在 `/v1/health` 暴露 `scriptHash`；Gateway 比较哈希值，代码变更后自动重启
 - **三层容错** — 请求级：stale session 自动清除并重试一次；进程级：连续失败达阈值后 proxy 自退出触发重启；网关级：崩溃后指数退避自动重启（2s → 10s → 60s，稳定 5min 后重置）
@@ -156,11 +162,13 @@ flowchart TD
 
 在 `openclaw.json` 的 `plugins.entries.openclaw-cursor-brain.config` 下：
 
-| 参数           | 类型   | 默认值   | 说明                        |
-| -------------- | ------ | -------- | --------------------------- |
-| `cursorPath`   | string | 自动探测 | cursor-agent 路径           |
-| `outputFormat` | string | 自动探测 | `"stream-json"` 或 `"json"` |
-| `proxyPort`    | number | `18790`  | Streaming proxy 端口        |
+| 参数                   | 类型    | 默认值   | 说明                                              |
+| ---------------------- | ------- | -------- | ------------------------------------------------- |
+| `cursorPath`           | string  | 自动探测 | cursor-agent 路径                                 |
+| `outputFormat`       | string  | 自动探测 | `"stream-json"` 或 `"json"`                       |
+| `proxyPort`            | number  | `18790`  | Streaming proxy 端口                              |
+| `forwardSystemPrompt`  | boolean | `true`   | 将 OpenClaw system prompt 转发到 cursor-agent stdin |
+| `systemPromptMaxChars` | number  | `120000` | 转发 system prompt 的最大字符数（超出截断）       |
 
 主模型与备用模型**不**写在插件 config 里，而是存在 `agents.defaults.model`（primary + fallbacks 数组）和 `models.providers.cursor-local`。通过 `openclaw cursor-brain setup` 或升级流程交互设置。
 
@@ -169,14 +177,31 @@ flowchart TD
 
 **单一数据源：** Proxy 调优项**仅**在 **openclaw.json** 的 `plugins.entries.openclaw-cursor-brain.config` 中配置。Proxy 始终只读 openclaw.json：由 gateway 启动时使用 `OPENCLAW_CONFIG_PATH`；**独立运行**（`node streaming-proxy.mjs`）时默认读 `~/.openclaw/openclaw.json`，无需单独配置文件。**卸载**会停止 proxy 并删除可能存在的旧版 `cursor-proxy.json`；**升级**会保留 openclaw.json 中的插件配置。
 
-| 变量                        | 默认值   | 说明                     |
-| --------------------------- | -------- | ------------------------ |
-| `OPENCLAW_TOOL_TIMEOUT_MS`  | `60000`  | MCP 工具调用超时（毫秒） |
-| `OPENCLAW_TOOL_RETRY_COUNT` | `2`      | MCP 瞬态错误重试次数     |
-| `CURSOR_PROXY_PORT`         | `18790`  | 独立运行 proxy 时的端口  |
-| `CURSOR_PROXY_API_KEY`      | _（无）_ | 独立模式 API Key 认证    |
+| 变量                             | 默认值   | 说明                                   |
+| -------------------------------- | -------- | -------------------------------------- |
+| `OPENCLAW_TOOL_TIMEOUT_MS`       | `60000`  | MCP 工具调用超时（毫秒）               |
+| `OPENCLAW_TOOL_RETRY_COUNT`      | `2`      | MCP 瞬态错误重试次数                   |
+| `CURSOR_PROXY_PORT`              | `18790`  | 独立运行 proxy 时的端口                |
+| `CURSOR_PROXY_API_KEY`           | _（无）_ | 独立模式 API Key 认证                  |
+| `CURSOR_FORWARD_SYSTEM_PROMPT`   | `true`   | 设为 `0`/`false` 关闭 system prompt 转发 |
+| `CURSOR_SYSTEM_PROMPT_MAX_CHARS` | `120000` | 转发 system prompt 的最大字符数        |
+| `CURSOR_PROXY_SELFTEST`          | _（关）_ | 设为 `1` 运行 proxy 自测               |
 
 </details>
+
+### System prompt 转发（v1.6.1+）
+
+OpenClaw 会为每个 agent 编译 system prompt（AGENTS.md、SOUL.md、skills、workspace 规则）。Streaming proxy 现已在每次请求前将其** prepend** 到 cursor-agent stdin：
+
+```
+<<<OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+…OpenClaw system prompt…
+<<<END_OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+
+[用户消息]
+```
+
+这修复了使用 `cursor-local` / Composer 时 agent 忽略 persona/角色设定的问题。仅调试时可设 `"forwardSystemPrompt": false`。当 system prompt 哈希变更（例如更新 persona）时，会自动清除该 OpenClaw session key 下过期的 cursor `--resume` 会话。
 
 ## CLI 命令
 

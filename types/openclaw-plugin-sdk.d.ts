@@ -1,25 +1,24 @@
 declare module "openclaw/plugin-sdk" {
-  export interface PluginLogger {
-    info(msg: string): void;
-    warn(msg: string): void;
-    error(msg: string): void;
-  }
+  export type PluginLogger = {
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+    error: (...args: unknown[]) => void;
+    debug?: (...args: unknown[]) => void;
+  };
 
-  export interface OpenClawPluginApi {
-    config: Record<string, any>;
-    pluginConfig: Record<string, unknown> | undefined;
+  export type OpenClawPluginApi = {
+    config: any;
+    pluginConfig?: Record<string, unknown>;
     logger: PluginLogger;
-    runtime: {
-      config: {
-        writeConfigFile(patch: Record<string, any>): Promise<void>;
+    resolvePath: (input: string) => string;
+    registerCli: (fn: (ctx: any) => void, opts?: any) => void;
+    runtime?: {
+      config?: {
+        writeConfigFile?: (patch: any) => Promise<void>;
       };
     };
-    resolvePath(rel: string): string;
-    registerCli(
-      handler: (ctx: { program: any }) => void,
-      opts?: { commands?: string[] },
-    ): void;
-  }
+    [key: string]: any;
+  };
 
   export function emptyPluginConfigSchema(): Record<string, unknown>;
 }

@@ -6,6 +6,7 @@ import { join, resolve, dirname, isAbsolute } from "path";
 import { homedir } from "os";
 import { execSync, spawn, spawnSync } from "child_process";
 import { createRequire } from "module";
+import { fileURLToPath } from "url";
 import { runSetup, type SetupContext, type CursorModel, detectCursorPath, detectOutputFormat, discoverCursorModels } from "./src/setup.js";
 import { runDoctorChecks, formatDoctorResults, countDiscoveredTools } from "./src/doctor.js";
 import { PLUGIN_ID, PROVIDER_ID, DEFAULT_PROXY_PORT, parseProxyPort, OPENCLAW_CONFIG_PATH, OPENCLAW_LOGS_DIR, CURSOR_PROXY_PID_PATH, CURSOR_PROXY_LOG_PATH, CURSOR_PROXY_STDERR_LOG_PATH, getCursorMcpConfigPath, type OutputFormat } from "./src/constants.js";
@@ -27,7 +28,7 @@ const HEALTH_CHECK_INTERVAL = 60000; // 60s
 let _clack: any;
 function loadClack() {
   if (_clack) return _clack;
-  let entry = process.argv[1] || __filename;
+  let entry = process.argv[1] || fileURLToPath(import.meta.url);
   try { entry = realpathSync(entry); } catch {}
   _clack = createRequire(entry)("@clack/prompts");
   return _clack;
@@ -780,10 +781,21 @@ function resolvePluginDir(api: OpenClawPluginApi): string {
   return api.resolvePath(".");
 }
 
+/** Resolve package root whether loaded from ./index.ts or ./dist/index.js. */
+function resolvePackageRoot(): string {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [moduleDir, dirname(moduleDir)]) {
+    if (existsSync(join(candidate, "package.json")) && existsSync(join(candidate, "openclaw.plugin.json"))) {
+      return candidate;
+    }
+  }
+  return moduleDir;
+}
+
 /** Load configSchema from openclaw.plugin.json so the host shows all options (e.g. requestTimeout, proxy) in config UI; fallback to empty if manifest missing. */
 function loadPluginConfigSchema(): Record<string, unknown> {
   try {
-    const pluginDir = dirname(createRequire(import.meta.url).resolve("./package.json"));
+    const pluginDir = resolvePackageRoot();
     const manifestPath = join(pluginDir, "openclaw.plugin.json");
     if (!existsSync(manifestPath)) return emptyPluginConfigSchema();
     const raw = readFileSync(manifestPath, "utf-8");
@@ -874,8 +886,20 @@ const plugin = {
 
       if (result.cursorPath) {
         try {
-          const newProviderConfig = buildProviderConfig(proxyPort, discovered);
           const existingProvider = existingProviders[PROVIDER_ID];
+          const existingModelCount = Array.isArray(existingProvider?.models)
+            ? existingProvider.models.length
+            : 0;
+          // Discovery can fail (cwd/env issues) and return 0 models; buildProviderConfig
+          // would then invent a single "auto" stub and wipe a full catalog from openclaw.json.
+          if (providerExists && existingModelCount > 0 && discovered.length === 0) {
+            api.logger.warn(
+              `Skipping provider sync: model discovery returned 0 models; keeping existing ${existingModelCount} models`,
+            );
+            doSyncInstallRecord();
+            if (runInteractiveSetup) return runInteractiveSetupInProcess({ pluginDir, config, pluginConfig: pluginConfig as Record<string, unknown>, result, proxyPort });
+          } else {
+          const newProviderConfig = buildProviderConfig(proxyPort, discovered);
           const providerUnchanged = existingProvider &&
             JSON.stringify(existingProvider) === JSON.stringify(newProviderConfig);
 
@@ -972,6 +996,7 @@ const plugin = {
               });
             }
           }
+          }
         } catch (e: any) {
           api.logger.warn(`Could not auto-configure: ${e?.message ?? String(e)}`);
           doSyncInstallRecord();
@@ -1021,9 +1046,9 @@ const plugin = {
         if (needRestart) {
           startProxy(proxyOpts);
         } else {
-          // Proxy is on port; we cleared proxyChild so we always adopt (kill + start) and own the process.
-          api.logger.info(`Adopting proxy on port ${proxyPort} — killing and restarting under this gateway`);
-          startProxy(proxyOpts);
+          // Healthy proxy already listening with matching script hash — reuse it.
+          // Always-adopting (kill+restart) races with systemd/CLI and causes EADDRINUSE outages.
+          api.logger.info(`Reusing healthy proxy on port ${proxyPort}`);
         }
       }
     }

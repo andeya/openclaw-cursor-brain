@@ -19,9 +19,9 @@ import http from "node:http";
 import { spawn, execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync, statSync } from "node:fs";
+import { join, resolve as pathResolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -32,6 +32,14 @@ const PLUGIN_ID = "openclaw-cursor-brain";
 // Single source of truth: openclaw.json (env OPENCLAW_CONFIG_PATH or default ~/.openclaw/openclaw.json)
 const openclawPath = process.env.OPENCLAW_CONFIG_PATH || join(OPENCLAW_DIR, "openclaw.json");
 let proxyConfigFile = {};
+/** @type {{ mtimeMs: number, defaultAgentId: string, defaultWorkspace: string, agents: Map<string, { workspace?: string }>, bindings: any[] }} */
+let agentsConfigCache = {
+  mtimeMs: -1,
+  defaultAgentId: "main",
+  defaultWorkspace: "",
+  agents: new Map(),
+  bindings: [],
+};
 if (existsSync(openclawPath)) {
   try {
     const cfg = JSON.parse(readFileSync(openclawPath, "utf-8"));
@@ -57,10 +65,264 @@ function fromConfigOrEnv(key, envKey, defaultVal, parse = (v) => v) {
 }
 
 const PORT = Math.min(65535, Math.max(1, parseInt(fromConfigOrEnv("port", "CURSOR_PROXY_PORT", "18790"), 10) || 18790));
-const WORKSPACE_DIR = process.env.CURSOR_WORKSPACE_DIR || proxyConfigFile.workspaceDir || "";
+/** Fallback workspace when per-agent resolution finds nothing (defaults.workspace / CURSOR_WORKSPACE_DIR). */
+const DEFAULT_WORKSPACE_DIR = process.env.CURSOR_WORKSPACE_DIR || proxyConfigFile.workspaceDir || "";
 const API_KEY = process.env.CURSOR_PROXY_API_KEY || proxyConfigFile.apiKey || "";
 const OUTPUT_FORMAT = process.env.CURSOR_OUTPUT_FORMAT || proxyConfigFile.outputFormat || "stream-json";
 // Model is taken from each request (gateway-specified); no global override.
+
+const CONV_INFO_RE = /Conversation info \(untrusted metadata\):\s*```json\s*(\{[\s\S]*?\})\s*```/;
+
+/** Forward OpenClaw system prompt (AGENTS/SOUL/etc.) into cursor-agent stdin. Default on. */
+const FORWARD_SYSTEM_PROMPT = fromConfigOrEnv(
+  "forwardSystemPrompt",
+  "CURSOR_FORWARD_SYSTEM_PROMPT",
+  "true",
+  (v) => String(v).toLowerCase() !== "false" && String(v) !== "0",
+);
+const SYSTEM_PROMPT_MAX_CHARS = Math.max(
+  4096,
+  parseInt(fromConfigOrEnv("systemPromptMaxChars", "CURSOR_SYSTEM_PROMPT_MAX_CHARS", "120000"), 10) || 120000,
+);
+const OPENCLAW_SYSTEM_BEGIN = "<<<OPENCLAW_SYSTEM_INSTRUCTIONS>>>";
+const OPENCLAW_SYSTEM_END = "<<<END_OPENCLAW_SYSTEM_INSTRUCTIONS>>>";
+
+/** sessionKey → sha256 prefix; invalidate cursor --resume when agent system prompt changes. */
+const sessionSystemHashes = new Map();
+
+// ── Per-agent workspace resolution ──────────────────────────────────────────
+
+function expandUserPath(p) {
+  if (!p || typeof p !== "string") return "";
+  const trimmed = p.replace(/\0/g, "").trim();
+  if (!trimmed) return "";
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return trimmed;
+}
+
+function normalizeAgentId(id) {
+  if (!id || typeof id !== "string") return "";
+  return id.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "";
+}
+
+function refreshAgentsConfig(force = false) {
+  try {
+    if (!existsSync(openclawPath)) return agentsConfigCache;
+    const st = statSync(openclawPath);
+    if (!force && st.mtimeMs === agentsConfigCache.mtimeMs) return agentsConfigCache;
+    const cfg = JSON.parse(readFileSync(openclawPath, "utf-8"));
+    const list = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
+    const agents = new Map();
+    let defaultAgentId = "main";
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const id = normalizeAgentId(entry.id);
+      if (!id) continue;
+      agents.set(id, { workspace: typeof entry.workspace === "string" ? entry.workspace.trim() : undefined });
+      if (entry.default === true) defaultAgentId = id;
+    }
+    if (!agents.has(defaultAgentId) && agents.has("main")) defaultAgentId = "main";
+    else if (!agents.has(defaultAgentId) && list[0]?.id) defaultAgentId = normalizeAgentId(list[0].id) || defaultAgentId;
+    const defaultWorkspace =
+      expandUserPath(cfg?.agents?.defaults?.workspace) ||
+      expandUserPath(DEFAULT_WORKSPACE_DIR) ||
+      join(OPENCLAW_DIR, "workspace");
+    const bindings = Array.isArray(cfg?.bindings) ? cfg.bindings : [];
+    agentsConfigCache = { mtimeMs: st.mtimeMs, defaultAgentId, defaultWorkspace, agents, bindings };
+  } catch {
+    /* keep last good cache */
+  }
+  return agentsConfigCache;
+}
+
+/** Mirror OpenClaw resolveAgentWorkspaceDir (agents.list[].workspace → defaults → workspace-<id>). */
+function resolveAgentWorkspaceDir(agentId) {
+  const cfg = refreshAgentsConfig();
+  const id = normalizeAgentId(agentId) || cfg.defaultAgentId;
+  const configured = expandUserPath(cfg.agents.get(id)?.workspace);
+  if (configured) return pathResolve(configured);
+  if (id === cfg.defaultAgentId) {
+    return pathResolve(cfg.defaultWorkspace || DEFAULT_WORKSPACE_DIR || join(OPENCLAW_DIR, "workspace"));
+  }
+  if (cfg.defaultWorkspace) return pathResolve(join(cfg.defaultWorkspace, id));
+  return pathResolve(join(OPENCLAW_DIR, `workspace-${id}`));
+}
+
+function isUsableWorkspaceDir(dir) {
+  if (!dir || typeof dir !== "string") return false;
+  try {
+    return existsSync(dir) && statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function headerValue(req, name) {
+  const v = req?.headers?.[name] ?? req?.headers?.[name.toLowerCase()];
+  if (Array.isArray(v)) return v[0]?.trim() || "";
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function parseAgentIdFromSessionKey(sessionKey) {
+  if (!sessionKey || typeof sessionKey !== "string") return "";
+  const parts = sessionKey.trim().split(":");
+  if (parts.length >= 3 && parts[0] === "agent" && parts[1]) return normalizeAgentId(parts[1]);
+  return "";
+}
+
+const WORKDIR_LINE_RE = /Your working directory is:\s*([^\n\r]+)/i;
+
+function extractWorkspaceFromMessages(messages) {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const text = typeof m?.content === "string"
+      ? m.content
+      : Array.isArray(m?.content)
+        ? m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")
+        : "";
+    if (!text) continue;
+    const match = text.match(WORKDIR_LINE_RE);
+    if (match?.[1]) {
+      const dir = expandUserPath(match[1].trim().replace(/^[`'"]+|[`'"]+$/g, ""));
+      if (dir) return pathResolve(dir);
+    }
+  }
+  return "";
+}
+
+function extractConversationInfo(messages) {
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "user") continue;
+    const text = typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")
+        : "";
+    const match = text.match(CONV_INFO_RE);
+    if (!match) continue;
+    try {
+      return JSON.parse(match[1]);
+    } catch { /* continue */ }
+  }
+  return null;
+}
+
+function resolveAgentIdFromBindings(convInfo) {
+  if (!convInfo) return "";
+  const cfg = refreshAgentsConfig();
+  if (!cfg.bindings.length) return "";
+  const candidates = [
+    convInfo.group_channel,
+    convInfo.chat_id,
+    convInfo.group_space,
+    convInfo.conversation_label,
+  ].filter((v) => typeof v === "string" && v.trim()).map((v) => v.trim());
+  if (!candidates.length) return "";
+  for (const b of cfg.bindings) {
+    const agentId = normalizeAgentId(b?.agentId);
+    const peerId = b?.match?.peer?.id;
+    if (!agentId || !peerId) continue;
+    if (candidates.some((c) => c === peerId || c.includes(peerId) || peerId.includes(c))) {
+      return agentId;
+    }
+  }
+  return "";
+}
+
+/**
+ * Resolve which agent + workspace directory cursor-agent should use for this request.
+ * Priority: explicit workspace → explicit agentId → session key agent → system-prompt workspace
+ * → Conversation-info bindings → default workspace.
+ */
+function resolveRequestWorkspace(body, req, sessionKey) {
+  const cfg = refreshAgentsConfig();
+  const sources = [];
+
+  const explicitWs =
+    expandUserPath(body?._openclaw_workspace) ||
+    expandUserPath(body?.workspace) ||
+    expandUserPath(body?.workspace_dir) ||
+    expandUserPath(headerValue(req, "x-openclaw-workspace")) ||
+    expandUserPath(headerValue(req, "x-cursor-workspace"));
+  if (explicitWs) {
+    const dir = pathResolve(explicitWs);
+    sources.push("explicit");
+    return {
+      agentId: normalizeAgentId(body?._openclaw_agent_id || body?.agent_id || body?.agentId || headerValue(req, "x-openclaw-agent-id")) || cfg.defaultAgentId,
+      workspaceDir: isUsableWorkspaceDir(dir) ? dir : (isUsableWorkspaceDir(cfg.defaultWorkspace) ? cfg.defaultWorkspace : dir),
+      src: "explicit",
+    };
+  }
+
+  let agentId =
+    normalizeAgentId(body?._openclaw_agent_id) ||
+    normalizeAgentId(body?.agent_id) ||
+    normalizeAgentId(body?.agentId) ||
+    normalizeAgentId(headerValue(req, "x-openclaw-agent-id")) ||
+    parseAgentIdFromSessionKey(sessionKey) ||
+    parseAgentIdFromSessionKey(body?._openclaw_session_id) ||
+    parseAgentIdFromSessionKey(body?.session_id) ||
+    parseAgentIdFromSessionKey(headerValue(req, "x-openclaw-session-id"));
+
+  if (agentId) sources.push("agentId");
+
+  const fromPrompt = extractWorkspaceFromMessages(body?.messages);
+  if (fromPrompt && isUsableWorkspaceDir(fromPrompt)) {
+    if (!agentId) {
+      // Reverse-map workspace → agent when possible
+      for (const [id] of cfg.agents) {
+        try {
+          if (pathResolve(resolveAgentWorkspaceDir(id)) === pathResolve(fromPrompt)) {
+            agentId = id;
+            sources.push("workspace-map");
+            break;
+          }
+        } catch { /* skip */ }
+      }
+    }
+    return {
+      agentId: agentId || cfg.defaultAgentId,
+      workspaceDir: fromPrompt,
+      src: sources.concat("prompt").join("+") || "prompt",
+    };
+  }
+
+  if (!agentId) {
+    const conv = extractConversationInfo(body?.messages);
+    agentId = resolveAgentIdFromBindings(conv);
+    if (agentId) sources.push("binding");
+  }
+
+  if (!agentId) {
+    agentId = cfg.defaultAgentId;
+    sources.push("default-agent");
+  }
+
+  let workspaceDir = resolveAgentWorkspaceDir(agentId);
+  if (!isUsableWorkspaceDir(workspaceDir)) {
+    const fallback = pathResolve(cfg.defaultWorkspace || DEFAULT_WORKSPACE_DIR || join(OPENCLAW_DIR, "workspace"));
+    if (isUsableWorkspaceDir(fallback) && fallback !== workspaceDir) {
+      sources.push("fallback-default");
+      workspaceDir = fallback;
+    }
+  }
+
+  return {
+    agentId,
+    workspaceDir,
+    src: sources.join("+") || "default",
+  };
+}
+
+function scopeSessionKey(key, agentId) {
+  if (!key || !agentId) return key;
+  if (key.startsWith("agent:")) return key;
+  return `agent:${agentId}:${key}`;
+}
 
 const RAW_FORWARD_THINKING = fromConfig("forwardThinking", "content", (v) => {
   if (v === "content") return "content";
@@ -272,17 +534,86 @@ function formatNoResponseMessage(stderrSnippet) {
   return firstLine || "(no response from cursor-agent)";
 }
 
+const RUNTIME_CONTEXT_HEADER = "OpenClaw runtime context for the immediately preceding user message.";
+const RUNTIME_EVENT_HEADER = "OpenClaw runtime event.";
+const INTERNAL_CONTEXT_BEGIN = "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>";
+
+function getMessageText(m) {
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  }
+  return "";
+}
+
+/** Skip OpenClaw runtime-context carrier messages (appended after the real user turn). */
+function isRuntimeContextMessage(m) {
+  if (!m || m.role !== "user") return false;
+  if (m.runtimeContextCarrier === true) return true;
+  const text = getMessageText(m).trim();
+  if (!text) return true;
+  if (text.startsWith(RUNTIME_CONTEXT_HEADER)) return true;
+  if (text.startsWith(RUNTIME_EVENT_HEADER)) return true;
+  if (text.includes(INTERNAL_CONTEXT_BEGIN)) return true;
+  if (text.includes("OpenClaw runtime context (internal):")) return true;
+  return false;
+}
+
 function extractUserMessage(messages) {
   if (!Array.isArray(messages) || !messages.length) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "user") continue;
-    if (typeof m.content === "string") return m.content;
-    if (Array.isArray(m.content)) {
-      return m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-    }
+    if (isRuntimeContextMessage(m)) continue;
+    const text = getMessageText(m);
+    if (text.trim()) return text;
   }
   return "";
+}
+
+/** Collect OpenClaw system/developer messages from the chat/completions payload. */
+function extractSystemPrompt(messages) {
+  if (!Array.isArray(messages)) return "";
+  const parts = [];
+  for (const m of messages) {
+    if (!m || (m.role !== "system" && m.role !== "developer")) continue;
+    const text = getMessageText(m).trim();
+    if (text) parts.push(text);
+  }
+  return parts.join("\n\n");
+}
+
+function hashSystemPrompt(systemPrompt) {
+  if (!systemPrompt) return "";
+  return createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16);
+}
+
+/** Drop stale cursor --resume mapping when OpenClaw system prompt changes (e.g. persona update). */
+function maybeInvalidateSessionForSystemChange(sessionKey, systemPrompt) {
+  if (!sessionKey || !systemPrompt?.trim()) return false;
+  const hash = hashSystemPrompt(systemPrompt);
+  const prev = sessionSystemHashes.get(sessionKey);
+  if (prev && prev !== hash) {
+    sessions.delete(sessionKey);
+    saveSessions(sessions);
+    log("info", `session ${sessionKey} cleared: system prompt changed (${prev} → ${hash})`);
+    sessionSystemHashes.set(sessionKey, hash);
+    return true;
+  }
+  sessionSystemHashes.set(sessionKey, hash);
+  return false;
+}
+
+/** Build cursor-agent stdin: OpenClaw system instructions + user turn (only channel available with -p). */
+function buildCursorAgentStdinPrompt(systemPrompt, userMsg) {
+  const user = (userMsg || "").trim();
+  if (!FORWARD_SYSTEM_PROMPT || !systemPrompt?.trim()) return user;
+  let sys = systemPrompt.trim();
+  if (sys.length > SYSTEM_PROMPT_MAX_CHARS) {
+    log("warn", `system prompt truncated: ${sys.length} → ${SYSTEM_PROMPT_MAX_CHARS} chars`);
+    sys = `${sys.slice(0, SYSTEM_PROMPT_MAX_CHARS)}\n\n[... OpenClaw system prompt truncated ...]`;
+  }
+  return `${OPENCLAW_SYSTEM_BEGIN}\n${sys}\n${OPENCLAW_SYSTEM_END}\n\n${user}`;
 }
 
 function sseEvent(id, model, { content, finishReason } = {}) {
@@ -327,7 +658,7 @@ async function streamChunked(res, id, model, text) {
 
 // ── Spawn cursor-agent ──────────────────────────────────────────────────────
 
-function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = false } = {}) {
+function spawnCursorAgent(stdinPrompt, sessionKey, requestModel, { skipSession = false, workspaceDir } = {}) {
   const cursorSessionId = !skipSession && sessionKey ? sessions.get(sessionKey) : null;
   const args = ["-p", "--output-format", OUTPUT_FORMAT, "--stream-partial-output", "--trust", "--approve-mcps", "--force"];
   const model = mapRequestModel(requestModel);
@@ -338,15 +669,16 @@ function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = fal
   // these directly without a shell throws EINVAL. Let Node route through
   // cmd.exe when needed.
   const needsShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(CURSOR_PATH);
+  const cwd = workspaceDir || DEFAULT_WORKSPACE_DIR || undefined;
 
   const child = spawn(CURSOR_PATH, args, {
-    cwd: WORKSPACE_DIR || undefined,
+    cwd,
     env: { ...process.env, ...(process.platform !== "win32" && { SHELL: process.env.SHELL || "/bin/bash" }) },
     shell: needsShell,
     stdio: ["pipe", "pipe", "pipe"],
   });
   // With -p (--print), agent reads the request prompt from stdin (script/non-interactive use)
-  child.stdin.write(userMsg);
+  child.stdin.write(stdinPrompt);
   child.stdin.end();
   child._stderrBuf = "";
   child.stderr.on("data", (d) => { child._stderrBuf += d; });
@@ -354,33 +686,26 @@ function spawnCursorAgent(userMsg, sessionKey, requestModel, { skipSession = fal
     if (child._stderrBuf.trim()) log("debug", `cursor-agent stderr: ${child._stderrBuf.trim().slice(0, 500)}`);
   });
   child._usedSession = !!cursorSessionId;
+  child._workspaceDir = cwd || "";
   return child;
 }
 
 // ── Session auto-derive from message metadata ──────────────────────────────
 
-const CONV_INFO_RE = /Conversation info \(untrusted metadata\):\s*```json\s*(\{[\s\S]*?\})\s*```/;
-
 function extractSessionFromMeta(messages) {
-  if (!Array.isArray(messages)) return null;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== "user") continue;
-    const text = typeof m.content === "string" ? m.content
-      : Array.isArray(m.content) ? m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")
-      : "";
-    const match = text.match(CONV_INFO_RE);
-    if (!match) continue;
-    try {
-      const info = JSON.parse(match[1]);
-      if (info.is_group_chat && info.group_channel) {
-        return `auto:grp:${info.group_channel}:${info.topic_id || "main"}`;
-      }
-      if (info.sender_id) {
-        return `auto:dm:${info.sender_id}`;
-      }
-    } catch {}
-  }
+  const info = extractConversationInfo(messages);
+  if (!info) return null;
+  try {
+    const groupChannel = info.group_channel || (info.is_group_chat ? info.chat_id : null);
+    if (groupChannel) {
+      const topic = info.topic_id != null && info.topic_id !== "" ? String(info.topic_id) : "main";
+      return `auto:grp:${groupChannel}:${topic}`;
+    }
+    const senderId = info.sender_id || info.sender?.id || info.sender?.e164;
+    if (senderId) {
+      return `auto:dm:${senderId}`;
+    }
+  } catch {}
   return null;
 }
 
@@ -557,16 +882,24 @@ function resolveSessionKey(body, req) {
 
 async function handleStream(req, res, body) {
   const userMsg = extractUserMessage(body.messages);
+  const systemPrompt = extractSystemPrompt(body.messages);
+  const stdinPrompt = buildCursorAgentStdinPrompt(systemPrompt, userMsg);
   const model = body.model || "auto";
-  const { key: sessionKey, src: sessionSrc } = resolveSessionKey(body, req);
+  const sessionResolved = resolveSessionKey(body, req);
+  const wsResolved = resolveRequestWorkspace(body, req, sessionResolved.key);
+  const sessionKey = scopeSessionKey(sessionResolved.key, wsResolved.agentId);
+  const sessionSrc = sessionResolved.src;
   const requestId = `chatcmpl-${randomUUID().slice(0, 8)}`;
   const msgPreview = userMsg.slice(0, 80).replace(/\n/g, " ");
   const startTime = Date.now();
   const effectiveTimeout = getEffectiveTimeout();
+  const spawnOpts = { workspaceDir: wsResolved.workspaceDir };
 
-  log("info", `[${requestId}] stream request: model=${model}, session=${sessionKey || "none"}(${sessionSrc}), timeout=${effectiveTimeout}ms, msg="${msgPreview}${userMsg.length > 80 ? "…" : ""}"`);
+  maybeInvalidateSessionForSystemChange(sessionKey, systemPrompt);
 
-  let child = spawnCursorAgent(userMsg, sessionKey, model);
+  log("info", `[${requestId}] stream request: model=${model}, agent=${wsResolved.agentId}, workspace=${wsResolved.workspaceDir || "none"}(${wsResolved.src}), session=${sessionKey || "none"}(${sessionSrc}), timeout=${effectiveTimeout}ms, system=${systemPrompt.length}chars(forward=${FORWARD_SYSTEM_PROMPT}), msg="${msgPreview}${userMsg.length > 80 ? "…" : ""}"`);
+
+  let child = spawnCursorAgent(stdinPrompt, sessionKey, model, spawnOpts);
   let clientGone = false;
   let timedOut = false;
 
@@ -620,7 +953,7 @@ async function handleStream(req, res, body) {
     sessions.delete(sessionKey);
     saveSessions(sessions);
     log("warn", `[${requestId}] empty response with session, retrying without resume`);
-    child = spawnCursorAgent(userMsg, sessionKey, model, { skipSession: true });
+    child = spawnCursorAgent(stdinPrompt, sessionKey, model, { ...spawnOpts, skipSession: true });
     const retryTimeout = setTimeout(() => {
       timedOut = true;
       log("warn", `[${requestId}] retry timeout after ${effectiveTimeout}ms, killing cursor-agent`);
@@ -760,21 +1093,29 @@ function collectNonStreamOutput(child, { requestId, sessionKey }) {
 
 async function handleNonStream(req, res, body) {
   const userMsg = extractUserMessage(body.messages);
+  const systemPrompt = extractSystemPrompt(body.messages);
+  const stdinPrompt = buildCursorAgentStdinPrompt(systemPrompt, userMsg);
   const model = body.model || "auto";
-  const { key: sessionKey, src: sessionSrc } = resolveSessionKey(body, req);
+  const sessionResolved = resolveSessionKey(body, req);
+  const wsResolved = resolveRequestWorkspace(body, req, sessionResolved.key);
+  const sessionKey = scopeSessionKey(sessionResolved.key, wsResolved.agentId);
+  const sessionSrc = sessionResolved.src;
   const requestId = `chatcmpl-${randomUUID().slice(0, 8)}`;
   const msgPreview = userMsg.slice(0, 80).replace(/\n/g, " ");
   const startTime = Date.now();
   const effectiveTimeout = getEffectiveTimeout();
+  const spawnOpts = { workspaceDir: wsResolved.workspaceDir };
 
-  log("info", `[${requestId}] non-stream request: model=${model}, session=${sessionKey || "none"}(${sessionSrc}), timeout=${effectiveTimeout}ms, msg="${msgPreview}${userMsg.length > 80 ? "…" : ""}"`);
+  maybeInvalidateSessionForSystemChange(sessionKey, systemPrompt);
+
+  log("info", `[${requestId}] non-stream request: model=${model}, agent=${wsResolved.agentId}, workspace=${wsResolved.workspaceDir || "none"}(${wsResolved.src}), session=${sessionKey || "none"}(${sessionSrc}), timeout=${effectiveTimeout}ms, system=${systemPrompt.length}chars(forward=${FORWARD_SYSTEM_PROMPT}), msg="${msgPreview}${userMsg.length > 80 ? "…" : ""}"`);
 
   const sendError = (err) => {
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { message: `cursor-agent error: ${err?.message ?? String(err)}` } }));
   };
 
-  let child = spawnCursorAgent(userMsg, sessionKey, model);
+  let child = spawnCursorAgent(stdinPrompt, sessionKey, model, spawnOpts);
   let timedOut = false;
 
   const timeout = setTimeout(() => {
@@ -801,7 +1142,7 @@ async function handleNonStream(req, res, body) {
     sessions.delete(sessionKey);
     saveSessions(sessions);
     log("warn", `[${requestId}] empty response with session, retrying without resume`);
-    child = spawnCursorAgent(userMsg, sessionKey, model, { skipSession: true });
+    child = spawnCursorAgent(stdinPrompt, sessionKey, model, { ...spawnOpts, skipSession: true });
     const retryTimeout = setTimeout(() => {
       timedOut = true;
       log("warn", `[${requestId}] retry timeout after ${effectiveTimeout}ms, killing cursor-agent`);
@@ -925,7 +1266,25 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/v1/health") {
     const degraded = consecutiveFailures >= 4 || consecutiveTimeouts >= 2;
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ status: degraded ? "degraded" : "ok", cursor: !!CURSOR_PATH, port: PORT, sessions: sessions.size, scriptHash: SCRIPT_HASH, consecutiveFailures, consecutiveTimeouts, lastErrorTime, lastErrorMsg }));
+    const agentsCfg = refreshAgentsConfig();
+    const agentWorkspaces = {};
+    for (const [id] of agentsCfg.agents) {
+      agentWorkspaces[id] = resolveAgentWorkspaceDir(id);
+    }
+    return res.end(JSON.stringify({
+      status: degraded ? "degraded" : "ok",
+      cursor: !!CURSOR_PATH,
+      port: PORT,
+      sessions: sessions.size,
+      scriptHash: SCRIPT_HASH,
+      consecutiveFailures,
+      consecutiveTimeouts,
+      lastErrorTime,
+      lastErrorMsg,
+      defaultWorkspace: agentsCfg.defaultWorkspace || DEFAULT_WORKSPACE_DIR || null,
+      defaultAgentId: agentsCfg.defaultAgentId,
+      agentWorkspaces,
+    }));
   }
 
   if (req.method === "GET" && req.url === "/v1/models") {
@@ -964,6 +1323,94 @@ const LISTEN_RETRIES = 2; // initial attempt + 2 retries = 3 total
 
 const PROXY_PID_FILE = join(OPENCLAW_DIR, "cursor-proxy.pid");
 
+if (process.env.CURSOR_PROXY_SELFTEST === "1") {
+  // Config-independent self-tests (no real openclaw.json / personal paths required).
+  const selftestRoot = join(tmpdir(), `cursor-proxy-selftest-${randomUUID().slice(0, 8)}`);
+  const promptWs = join(selftestRoot, "prompt");
+  const explicitWs = join(selftestRoot, "explicit");
+  const headerWs = join(selftestRoot, "header");
+  for (const d of [promptWs, explicitWs, headerWs]) mkdirSync(d, { recursive: true });
+
+  const cases = [];
+  const assert = (name, cond, detail = "") => {
+    cases.push({ name, ok: !!cond, detail });
+    if (!cond) console.error(`FAIL ${name}: ${detail}`);
+    else console.log(`PASS ${name}${detail ? `: ${detail}` : ""}`);
+  };
+
+  assert("normalize-agent-id", normalizeAgentId(" Foo-Bar! ") === "foo-bar", normalizeAgentId(" Foo-Bar! "));
+  assert(
+    "parse-session-agent",
+    parseAgentIdFromSessionKey("agent:demo-agent:whatsapp:group:example-group@g.us") === "demo-agent",
+    parseAgentIdFromSessionKey("agent:demo-agent:whatsapp:group:example-group@g.us"),
+  );
+
+  const scoped = scopeSessionKey("auto:dm:+10000000000", "main");
+  assert("scope-session", scoped === "agent:main:auto:dm:+10000000000", scoped);
+  assert("scope-session-idempotent", scopeSessionKey(scoped, "main") === scoped, scoped);
+
+  const fromPrompt = resolveRequestWorkspace({
+    messages: [{ role: "system", content: `## Workspace\nYour working directory is: ${promptWs}\n` }],
+  }, { headers: {} }, null);
+  assert(
+    "prompt-workdir",
+    fromPrompt.workspaceDir === pathResolve(promptWs),
+    `${fromPrompt.workspaceDir} (${fromPrompt.src})`,
+  );
+
+  const fromExplicit = resolveRequestWorkspace(
+    { workspace: explicitWs, agent_id: "demo-agent" },
+    { headers: {} },
+    null,
+  );
+  assert(
+    "explicit-workspace",
+    fromExplicit.src === "explicit" && fromExplicit.workspaceDir === pathResolve(explicitWs),
+    `${fromExplicit.workspaceDir} (${fromExplicit.src})`,
+  );
+
+  const fromHeader = resolveRequestWorkspace(
+    {},
+    { headers: { "x-openclaw-workspace": headerWs, "x-openclaw-agent-id": "demo-agent" } },
+    null,
+  );
+  assert(
+    "header-workspace",
+    fromHeader.src === "explicit" && fromHeader.workspaceDir === pathResolve(headerWs),
+    `${fromHeader.workspaceDir} (${fromHeader.src})`,
+  );
+
+  const fromSession = resolveRequestWorkspace(
+    {},
+    { headers: {} },
+    "agent:demo-agent:whatsapp:group:example-group@g.us",
+  );
+  assert("session-key-agent", fromSession.agentId === "demo-agent", fromSession.agentId);
+
+  const sysOnly = extractSystemPrompt([
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "developer", content: "Wiki-only." },
+    { role: "user", content: "Hi" },
+  ]);
+  assert("extract-system", sysOnly === "You are a helpful assistant.\n\nWiki-only.", sysOnly);
+
+  const stdin = buildCursorAgentStdinPrompt("Persona rules", "Who are you?");
+  assert(
+    "build-stdin-wrap",
+    stdin.includes(OPENCLAW_SYSTEM_BEGIN) && stdin.includes("Persona rules") && stdin.endsWith("Who are you?"),
+    `${stdin.length} chars`,
+  );
+
+  const stdinPlain = buildCursorAgentStdinPrompt("", "Hello");
+  assert("build-stdin-plain", stdinPlain === "Hello", stdinPlain);
+
+  try { rmSync(selftestRoot, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+
+  const failed = cases.filter((c) => !c.ok);
+  console.log(`selftest ${cases.length - failed.length}/${cases.length} passed`);
+  process.exit(failed.length ? 1 : 0);
+}
+
 function onListenSuccess() {
   try {
     writeFileSync(PROXY_PID_FILE, String(process.pid), "utf-8");
@@ -976,10 +1423,17 @@ function onListenSuccess() {
   } else {
     log("warn", "cursor-agent not found — all /v1/chat/completions requests will fail. Set CURSOR_PATH or install Cursor.");
   }
-  log("info", `Model: from request (gateway), Format: ${OUTPUT_FORMAT}, Partial: on, Thinking: ${RAW_FORWARD_THINKING || "off"}, InstantResult: ${INSTANT_RESULT}, SessionAuto: true`);
+  log("info", `Model: from request (gateway), Format: ${OUTPUT_FORMAT}, Partial: on, Thinking: ${RAW_FORWARD_THINKING || "off"}, InstantResult: ${INSTANT_RESULT}, SessionAuto: true, ForwardSystemPrompt: ${FORWARD_SYSTEM_PROMPT} (max ${SYSTEM_PROMPT_MAX_CHARS} chars)`);
   log("info", `Sessions loaded: ${sessions.size} (max ${MAX_SESSIONS})`);
   if (API_KEY) log("info", "API key authentication enabled");
-  if (WORKSPACE_DIR) log("info", `Workspace: ${WORKSPACE_DIR}`);
+  const agentsCfg = refreshAgentsConfig(true);
+  const defaultWs = agentsCfg.defaultWorkspace || DEFAULT_WORKSPACE_DIR;
+  if (defaultWs) log("info", `Default workspace: ${defaultWs} (agent=${agentsCfg.defaultAgentId})`);
+  for (const [id] of agentsCfg.agents) {
+    const ws = resolveAgentWorkspaceDir(id);
+    if (ws && ws !== defaultWs) log("info", `Agent workspace: ${id} → ${ws}`);
+  }
+  log("info", "Per-agent workspace: enabled (explicit / agentId / prompt / bindings / default)");
 }
 
 let listenRetriesLeft = LISTEN_RETRIES;
