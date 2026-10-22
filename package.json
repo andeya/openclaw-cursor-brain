@@ -1,6 +1,6 @@
 {
   "name": "openclaw-cursor-brain",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Community-maintained fork: Use Cursor as the AI brain for OpenClaw — OpenClaw 2026.x compatible, per-agent workspace routing.",
   "type": "module",
   "license": "MIT",
