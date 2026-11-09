@@ -181,6 +181,29 @@ export function runDoctorChecks(opts: {
   // Gateway connectivity
   checks.push(createGatewayCheck(opts.gatewayPort, opts.gatewayToken));
 
+  // Per-agent workspaces (cursor-brain proxy cwd routing)
+  try {
+    const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
+    const list = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
+    const defaultWs = cfg?.agents?.defaults?.workspace || "(unset)";
+    const overrides = list
+      .filter((a: any) => a?.id && a?.workspace)
+      .map((a: any) => `${a.id}→${a.workspace}`);
+    checks.push({
+      ok: true,
+      label: "Per-agent workspaces",
+      detail: overrides.length
+        ? `default=${defaultWs}; ${overrides.join(", ")}`
+        : `default=${defaultWs} (no per-agent overrides)`,
+    });
+  } catch (e: any) {
+    checks.push({
+      ok: false,
+      label: "Per-agent workspaces",
+      detail: e?.message ?? String(e),
+    });
+  }
+
   return checks;
 }
 

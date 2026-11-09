@@ -1,8 +1,10 @@
 <p align="center">
-  <a href="https://github.com/openclaw/openclaw"><img src="./doc/openclaw-logo.svg" width="96" height="96" alt="OpenClaw" style="vertical-align: middle"></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://cursor.sh"><img src="./doc/cursor-logo.svg" width="80" height="80" alt="Cursor" style="vertical-align: middle"></a>
   <h1 align="center">openclaw-cursor-brain</h1>
+  <p align="center"><strong>社群維護分支 — 適配 OpenClaw 2026.x</strong></p>
+  <p align="center">
+    基於 <a href="https://github.com/andeya/openclaw-cursor-brain">andeya/openclaw-cursor-brain</a> fork 並持續維護，
+    支援最新 OpenClaw 與 <strong>per-agent workspace</strong> 路由。
+  </p>
   <p align="center">
     将 <a href="https://cursor.sh">Cursor</a> 作为 <a href="https://github.com/openclaw/openclaw">OpenClaw</a> 的 AI 大脑 — 原生调用所有插件工具
   </p>
@@ -14,11 +16,13 @@
     <a href="https://nodejs.org"><img src="https://img.shields.io/badge/Node.js-%3E%3D18-green.svg" alt="Node.js >= 18"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <br/>
-    <a href="./README.md">English</a> | 中文 · <a href="./doc/technical-guide-zh.md">技术设计文档</a> · <a href="./doc/technical-guide-en.md">Technical Guide</a>
+    <a href="./README.md">English</a> | 中文 · <a href="./CHANGELOG.md">更新日志</a> · <a href="./CONTRIBUTING.md">贡献指南</a>
   </p>
 </p>
 
 ---
+
+> **Fork 说明：** 本仓库是 [andeya/openclaw-cursor-brain](https://github.com/andeya/openclaw-cursor-brain) 的社群维护分支。上游已不适配 OpenClaw 2026.x；本分支包含兼容性修复与 **per-agent workspace** 支持。详见 [CHANGELOG.md](./CHANGELOG.md)。
 
 **openclaw-cursor-brain** 是一个 [OpenClaw](https://github.com/openclaw/openclaw) 插件，将 [Cursor Agent CLI](https://cursor.sh) 作为实时流式 AI 后端，通过 [MCP](https://modelcontextprotocol.io) 连接所有插件工具，让 AI 原生调用飞书、Slack、GitHub 等能力。
 
@@ -29,19 +33,74 @@
 
 - [OpenClaw](https://github.com/openclaw/openclaw) 已全局安装（`npm i -g openclaw`）
 - Node.js ≥ 18
+- **无图形界面的 VPS / Linux 服务器：** 用 `curl https://cursor.com/install -fsS | bash` 安装 Cursor Agent CLI，再用 `NO_OPEN_BROWSER=1 cursor-agent login` 登录（建议 `ssh -t` 以便显示登录链接/验证码）
 
-## 快速开始
+## 安装
+
+### 本地克隆 / git 源码
+
+插件源码为 **TypeScript**。OpenClaw 运行时加载 `./dist/index.js` — **刚 clone 的仓库没有 `dist/` 目录**，必须先编译。
 
 ```bash
-openclaw plugins install openclaw-cursor-brain # 安装与默认配置
-openclaw gateway restart                       # 重启服务
-openclaw cursor-brain doctor                   # 验证
+git clone https://github.com/Mic-coder-Mic/openclaw-cursor-brainV2.git
+cd openclaw-cursor-brainV2
+
+npm install          # 安装依赖（含 TypeScript）
+npm run build        # 生成 dist/index.js — 安装前必做
+ls dist/index.js     # 必须存在
+
+openclaw plugins install ./
+openclaw gateway restart
+openclaw cursor-brain doctor
+openclaw cursor-brain setup
+openclaw gateway restart
 ```
 
-**主/备模型选择**（可选）：在终端为 TTY 时，**`openclaw plugins install`** 完成后会自动进入交互式选择；若非 TTY 或未弹出，可手动执行：
+若出现 **`runtime extension entry not found: ./dist/index.js`**，说明未执行 `npm run build`。先 build，再重新 install。
+
+**从本地目录升级**（保留配置并重新 setup）：
 
 ```bash
-openclaw cursor-brain setup   # 可选：选择主模型与备用模型
+cd /path/to/openclaw-cursor-brainV2
+npm run build
+openclaw cursor-brain upgrade ./
+openclaw gateway restart
+```
+
+### VPS / 无头服务器清单
+
+1. 安装 OpenClaw，确认 Gateway 已配置（`openclaw gateway status`）。
+2. 安装 Cursor Agent CLI：`curl https://cursor.com/install -fsS | bash`
+3. 登录 Cursor（必做 — 未登录时 doctor 会失败）：
+
+   ```bash
+   NO_OPEN_BROWSER=1 cursor-agent login
+   cursor-agent status
+   ```
+
+4. 安装插件（见上文）。
+5. 将主模型设为 Cursor，而非 Anthropic：
+
+   ```bash
+   openclaw config set agents.defaults.model.primary "cursor-local/auto"
+   openclaw gateway restart
+   ```
+
+6. 验证：
+
+   ```bash
+   openclaw cursor-brain doctor
+   curl -s http://127.0.0.1:18790/v1/health
+   ```
+
+交互式 `setup` / 模型选择请用 **`ssh -t user@host`**。非 TTY 环境请在安装后手动执行 `openclaw cursor-brain setup`。
+
+### 安装后 — 主/备模型选择
+
+在 TTY 终端下，**`openclaw plugins install`** 完成后可能会自动进入交互式选择；若非 TTY 或未弹出，可手动执行：
+
+```bash
+openclaw cursor-brain setup   # 选择主模型与备用模型
 openclaw gateway restart      # 若改了配置需重启
 ```
 
@@ -141,6 +200,8 @@ flowchart TD
 - **工具调用日志** — proxy 记录每个工具调用的名称、参数摘要、耗时和 call ID，便于诊断
 - **工具自动发现** — 启动时从磁盘 SKILL.md 直接注册（不依赖 Gateway）；后台异步验证用于诊断；60s TTL 缓存
 - **Session 自动推导** — 自动从消息元数据（sender/group/topic）推导 session key，Gateway 无需显式传递 session ID
+- **Per-agent workspace** — 按 agent 解析 `cursor-agent` cwd（显式 workspace、session key、system-prompt 工作目录、channel binding、`agents.defaults.workspace`）；session 按 agent 隔离，`--resume` 不跨 workspace
+- **System prompt 转发** — OpenClaw 编译后的 system prompt（AGENTS/SOUL/IDENTITY/skills）在每次请求前写入 cursor-agent stdin（config `forwardSystemPrompt`，默认开启）。system prompt 变更时自动清除过期的 `--resume` session
 - **会话持久化** — cursor-agent 会话持久化到磁盘（`~/.openclaw/cursor-sessions.json`）；也支持通过 body 字段或 HTTP 头（`X-OpenClaw-Session-Id`、`X-Session-Id`）显式传递
 - **升级自动重启** — proxy 在 `/v1/health` 暴露 `scriptHash`；Gateway 比较哈希值，代码变更后自动重启
 - **三层容错** — 请求级：stale session 自动清除并重试一次；进程级：连续失败达阈值后 proxy 自退出触发重启；网关级：崩溃后指数退避自动重启（2s → 10s → 60s，稳定 5min 后重置）
@@ -156,11 +217,13 @@ flowchart TD
 
 在 `openclaw.json` 的 `plugins.entries.openclaw-cursor-brain.config` 下：
 
-| 参数           | 类型   | 默认值   | 说明                        |
-| -------------- | ------ | -------- | --------------------------- |
-| `cursorPath`   | string | 自动探测 | cursor-agent 路径           |
-| `outputFormat` | string | 自动探测 | `"stream-json"` 或 `"json"` |
-| `proxyPort`    | number | `18790`  | Streaming proxy 端口        |
+| 参数                   | 类型    | 默认值   | 说明                                              |
+| ---------------------- | ------- | -------- | ------------------------------------------------- |
+| `cursorPath`           | string  | 自动探测 | cursor-agent 路径                                 |
+| `outputFormat`       | string  | 自动探测 | `"stream-json"` 或 `"json"`                       |
+| `proxyPort`            | number  | `18790`  | Streaming proxy 端口                              |
+| `forwardSystemPrompt`  | boolean | `true`   | 将 OpenClaw system prompt 转发到 cursor-agent stdin |
+| `systemPromptMaxChars` | number  | `120000` | 转发 system prompt 的最大字符数（超出截断）       |
 
 主模型与备用模型**不**写在插件 config 里，而是存在 `agents.defaults.model`（primary + fallbacks 数组）和 `models.providers.cursor-local`。通过 `openclaw cursor-brain setup` 或升级流程交互设置。
 
@@ -169,14 +232,31 @@ flowchart TD
 
 **单一数据源：** Proxy 调优项**仅**在 **openclaw.json** 的 `plugins.entries.openclaw-cursor-brain.config` 中配置。Proxy 始终只读 openclaw.json：由 gateway 启动时使用 `OPENCLAW_CONFIG_PATH`；**独立运行**（`node streaming-proxy.mjs`）时默认读 `~/.openclaw/openclaw.json`，无需单独配置文件。**卸载**会停止 proxy 并删除可能存在的旧版 `cursor-proxy.json`；**升级**会保留 openclaw.json 中的插件配置。
 
-| 变量                        | 默认值   | 说明                     |
-| --------------------------- | -------- | ------------------------ |
-| `OPENCLAW_TOOL_TIMEOUT_MS`  | `60000`  | MCP 工具调用超时（毫秒） |
-| `OPENCLAW_TOOL_RETRY_COUNT` | `2`      | MCP 瞬态错误重试次数     |
-| `CURSOR_PROXY_PORT`         | `18790`  | 独立运行 proxy 时的端口  |
-| `CURSOR_PROXY_API_KEY`      | _（无）_ | 独立模式 API Key 认证    |
+| 变量                             | 默认值   | 说明                                   |
+| -------------------------------- | -------- | -------------------------------------- |
+| `OPENCLAW_TOOL_TIMEOUT_MS`       | `60000`  | MCP 工具调用超时（毫秒）               |
+| `OPENCLAW_TOOL_RETRY_COUNT`      | `2`      | MCP 瞬态错误重试次数                   |
+| `CURSOR_PROXY_PORT`              | `18790`  | 独立运行 proxy 时的端口                |
+| `CURSOR_PROXY_API_KEY`           | _（无）_ | 独立模式 API Key 认证                  |
+| `CURSOR_FORWARD_SYSTEM_PROMPT`   | `true`   | 设为 `0`/`false` 关闭 system prompt 转发 |
+| `CURSOR_SYSTEM_PROMPT_MAX_CHARS` | `120000` | 转发 system prompt 的最大字符数        |
+| `CURSOR_PROXY_SELFTEST`          | _（关）_ | 设为 `1` 运行 proxy 自测               |
 
 </details>
+
+### System prompt 转发（v1.6.1+）
+
+OpenClaw 会为每个 agent 编译 system prompt（AGENTS.md、SOUL.md、skills、workspace 规则）。Streaming proxy 现已在每次请求前将其** prepend** 到 cursor-agent stdin：
+
+```
+<<<OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+…OpenClaw system prompt…
+<<<END_OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+
+[用户消息]
+```
+
+这修复了使用 `cursor-local` / Composer 时 agent 忽略 persona/角色设定的问题。仅调试时可设 `"forwardSystemPrompt": false`。当 system prompt 哈希变更（例如更新 persona）时，会自动清除该 OpenClaw session key 下过期的 cursor `--resume` 会话。
 
 ## CLI 命令
 
@@ -267,6 +347,8 @@ curl http://127.0.0.1:18790/v1/chat/completions \
 
 | 问题                                                               | 解决                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`plugin register must be synchronous`**                          | OpenClaw 2026.7+ 要求 `register()` 同步返回。请升级到最新 v2（setup 改在子进程 `openclaw cursor-brain setup` 中运行）。若安装已部分成功：手动执行 `openclaw cursor-brain setup`，再 `openclaw gateway restart`。 |
+| **`runtime extension entry not found: ./dist/index.js`**           | 安装前未编译。在仓库目录执行 `npm install && npm run build`，确认存在 `dist/index.js` 后重新 `openclaw plugins install ./`。                                                                                                                                                          |
 | **WARNING: dangerous code patterns (child_process / env+network)** | OpenClaw 安装时会扫描插件并可能显示此告警。本插件需使用 `child_process` 运行 Cursor agent 与 proxy，并读取环境变量（如 `CURSOR_PATH`）进行配置。插件仅向子进程传递最小化白名单环境变量，不会传递完整 `process.env`。可放心忽略此告警。                                                                                                                                                    |
 | **卡在「Provider synced」后不退出**                                | 旧版在 `plugins install` 时会启动 proxy/定时器导致进程不退出；新版已修复，安装会正常结束。请升级到最新版。                                                                                                                                                                                                                                                                                |
 | **安装时没有主/备模型选择**                                        | 需在 TTY 终端下安装才会自动弹出；否则安装后执行 `openclaw cursor-brain setup` 即可。                                                                                                                                                                                                                                                                                                      |

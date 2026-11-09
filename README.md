@@ -3,6 +3,10 @@
   &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://cursor.sh"><img src="./doc/cursor-logo.svg" width="80" height="80" alt="Cursor" style="vertical-align: middle"></a>
   <h1 align="center">openclaw-cursor-brain</h1>
+  <p align="center"><strong>Community Maintenance Branch — Adapted for OpenClaw 2026.x</strong></p>
+  <p align="center">
+    Forked from <a href="https://github.com/andeya/openclaw-cursor-brain">andeya/openclaw-cursor-brain</a> and continuously maintained, supporting the latest OpenClaw and per‑agent workspace routing.
+  </p>
   <p align="center">
     Use <a href="https://cursor.sh">Cursor</a> as the AI brain for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> — with full access to every plugin tool.
   </p>
@@ -29,19 +33,74 @@
 
 - [OpenClaw](https://github.com/openclaw/openclaw) installed globally (`npm i -g openclaw`)
 - Node.js ≥ 18
+- **Headless VPS / Linux server:** Cursor Agent CLI via `curl https://cursor.com/install -fsS | bash`, then authenticate with `NO_OPEN_BROWSER=1 cursor-agent login` (use `ssh -t` so the login URL/code is shown)
 
-## Quick Start
+## Installation
+
+### Local clone / git checkout
+
+The plugin source is **TypeScript**. OpenClaw loads `./dist/index.js` at runtime — a fresh clone has **no `dist/` folder** until you build.
 
 ```bash
-openclaw plugins install openclaw-cursor-brain # install & default config
-openclaw gateway restart                       # restart gateway
-openclaw cursor-brain doctor                   # verify
+git clone https://github.com/Mic-coder-Mic/openclaw-cursor-brainV2.git
+cd openclaw-cursor-brainV2
+
+npm install          # deps + TypeScript
+npm run build        # creates dist/index.js — required before install
+ls dist/index.js     # must exist
+
+openclaw plugins install ./
+openclaw gateway restart
+openclaw cursor-brain doctor
+openclaw cursor-brain setup
+openclaw gateway restart
 ```
 
-**Model selection** (optional): In a TTY, interactive model selection may run automatically after install. Otherwise run:
+If you see **`runtime extension entry not found: ./dist/index.js`**, you skipped `npm run build`. Run build, then install again.
+
+**Upgrade from a local directory** (preserves config, re-runs setup):
 
 ```bash
-openclaw cursor-brain setup   # optional: choose primary & fallback models
+cd /path/to/openclaw-cursor-brainV2
+npm run build
+openclaw cursor-brain upgrade ./
+openclaw gateway restart
+```
+
+### VPS / headless server checklist
+
+1. Install OpenClaw and ensure Gateway is configured (`openclaw gateway status`).
+2. Install Cursor Agent CLI: `curl https://cursor.com/install -fsS | bash`
+3. Log in (required — doctor fails without this):
+
+   ```bash
+   NO_OPEN_BROWSER=1 cursor-agent login
+   cursor-agent status
+   ```
+
+4. Install the plugin (see above).
+5. Set primary model to Cursor, not Anthropic:
+
+   ```bash
+   openclaw config set agents.defaults.model.primary "cursor-local/auto"
+   openclaw gateway restart
+   ```
+
+6. Verify:
+
+   ```bash
+   openclaw cursor-brain doctor
+   curl -s http://127.0.0.1:18790/v1/health
+   ```
+
+Use **`ssh -t user@host`** for interactive `setup` / model selection. On non-TTY sessions, run `openclaw cursor-brain setup` manually after install.
+
+### After install — model selection
+
+In a TTY, interactive model selection may run automatically after install. Otherwise run:
+
+```bash
+openclaw cursor-brain setup   # choose primary & fallback models
 openclaw gateway restart      # if you changed config
 ```
 
@@ -132,6 +191,8 @@ Sessions are persisted to disk and reused via `--resume` for faster subsequent r
 
 ## Features
 
+- **Per-agent workspace — each request resolves `cursor-agent` cwd from (in order) explicit workspace/agent headers or body fields, `agent:<id>:…` session keys, OpenClaw system-prompt `Your working directory is: …`, channel bindings in `openclaw.json`, then `agents.defaults.workspace`. Sessions are scoped by agent id so resumes never cross workspaces.**
+- **Session persistence** — cursor-agent sessions persisted to disk (`~/.openclaw/cursor-sessions.json`); explicit session IDs also accepted via body fields or HTTP headers (`X-OpenClaw-Session-Id`, `X-Session-Id`)
 - **Zero config** — install and restart; everything auto-configures
 - **Interactive model selection** — `setup`/`upgrade` present all discovered models via `@clack/prompts` (single-select primary, multi-select ordered fallbacks)
 - **Dynamic model discovery** — models auto-detected from `cursor-agent --list-models`, synced to OpenClaw on every gateway start
@@ -141,7 +202,7 @@ Sessions are persisted to disk and reused via `--resume` for faster subsequent r
 - **Tool call logging** — proxy logs every tool invocation with name, arguments summary, duration, and call ID for diagnostics
 - **Tool auto-discovery** — disk-based registration from SKILL.md at startup (no Gateway dependency); background verification for diagnostics; cached with 60s TTL
 - **Session auto-derive** — session keys automatically derived from conversation metadata (sender/group/topic) in user messages; no explicit session ID required from Gateway
-- **Session persistence** — cursor-agent sessions persisted to disk (`~/.openclaw/cursor-sessions.json`); explicit session IDs also accepted via body fields or HTTP headers (`X-OpenClaw-Session-Id`, `X-Session-Id`)
+- **System prompt forwarding** — OpenClaw's compiled system prompt (AGENTS/SOUL/IDENTITY/skills) is prepended to cursor-agent stdin on every request (config `forwardSystemPrompt`, default on). Stale `--resume` sessions are cleared when the system prompt hash changes.
 - **Auto-restart on upgrade** — proxy exposes a `scriptHash` in `/v1/health`; gateway compares it against the installed script hash and auto-restarts when code changes
 - **Three-layer fault tolerance** — request-level: auto-clear stale session and retry once; process-level: self-exit after consecutive failures to trigger restart; gateway-level: exponential backoff auto-restart on crash (2s → 10s → 60s, resets after 5min stable)
 - **Version guard** — `upgrade` command detects version comparison; downgrade or same-version requires confirmation
@@ -156,11 +217,13 @@ Sessions are persisted to disk and reused via `--resume` for faster subsequent r
 
 In `openclaw.json` under `plugins.entries.openclaw-cursor-brain.config`:
 
-| Option         | Type   | Default     | Description                 |
-| -------------- | ------ | ----------- | --------------------------- |
-| `cursorPath`   | string | auto-detect | Path to cursor-agent binary |
-| `outputFormat` | string | auto-detect | `"stream-json"` or `"json"` |
-| `proxyPort`    | number | `18790`     | Streaming proxy port        |
+| Option                 | Type    | Default     | Description                                      |
+| ---------------------- | ------- | ----------- | ------------------------------------------------ |
+| `cursorPath`           | string  | auto-detect | Path to cursor-agent binary                      |
+| `outputFormat`         | string  | auto-detect | `"stream-json"` or `"json"`                      |
+| `proxyPort`            | number  | `18790`     | Streaming proxy port                             |
+| `forwardSystemPrompt`  | boolean | `true`      | Forward OpenClaw AGENTS/SOUL/system into cursor-agent stdin |
+| `systemPromptMaxChars` | number  | `120000`    | Max system prompt chars forwarded (truncate beyond) |
 
 Primary and fallback models are **not** in plugin config; they are stored in `agents.defaults.model` (primary + fallbacks array) and in `models.providers.cursor-local`. Use `openclaw cursor-brain setup` or the upgrade flow to set them interactively.
 
@@ -169,14 +232,31 @@ Primary and fallback models are **not** in plugin config; they are stored in `ag
 
 **Single source of truth:** Proxy options are configured **only** in **openclaw.json** under `plugins.entries.openclaw-cursor-brain.config`. The proxy always reads from openclaw.json: when started by the gateway it uses `OPENCLAW_CONFIG_PATH`; when run **standalone** (`node streaming-proxy.mjs`) it defaults to `~/.openclaw/openclaw.json`. No separate config file. **Uninstall** stops the proxy and removes any legacy `cursor-proxy.json`; **upgrade** preserves plugin config in openclaw.json.
 
-| Variable                    | Default  | Description                          |
-| --------------------------- | -------- | ------------------------------------ |
-| `OPENCLAW_TOOL_TIMEOUT_MS`  | `60000`  | MCP tool call timeout (ms)           |
-| `OPENCLAW_TOOL_RETRY_COUNT` | `2`      | MCP retries on transient errors      |
-| `CURSOR_PROXY_PORT`         | `18790`  | Port (when running proxy standalone) |
-| `CURSOR_PROXY_API_KEY`      | _(none)_ | API key for standalone proxy auth    |
+| Variable                       | Default  | Description                                           |
+| ------------------------------ | -------- | ----------------------------------------------------- |
+| `OPENCLAW_TOOL_TIMEOUT_MS`     | `60000`  | MCP tool call timeout (ms)                            |
+| `OPENCLAW_TOOL_RETRY_COUNT`    | `2`      | MCP retries on transient errors                       |
+| `CURSOR_PROXY_PORT`            | `18790`  | Port (when running proxy standalone)                  |
+| `CURSOR_PROXY_API_KEY`         | _(none)_ | API key for standalone proxy auth                     |
+| `CURSOR_FORWARD_SYSTEM_PROMPT` | `true`   | Set `0`/`false` to disable system prompt forwarding   |
+| `CURSOR_SYSTEM_PROMPT_MAX_CHARS` | `120000` | Truncate forwarded system prompt beyond this limit |
+| `CURSOR_PROXY_SELFTEST`        | _(off)_  | Set `1` to run config-independent proxy self-tests    |
 
 </details>
+
+### System prompt forwarding (v1.6.1+)
+
+OpenClaw builds a per-agent system prompt (AGENTS.md, SOUL.md, skills, workspace rules). The streaming proxy now **prepends** that content to cursor-agent stdin on every request:
+
+```
+<<<OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+…OpenClaw system prompt…
+<<<END_OPENCLAW_SYSTEM_INSTRUCTIONS>>>
+
+[user message]
+```
+
+This fixes agents ignoring persona/role when using `cursor-local` / Composer. Disable with `"forwardSystemPrompt": false` only for debugging. When the system prompt hash changes (e.g. persona update), stale cursor `--resume` sessions for that OpenClaw session key are cleared automatically.
 
 ## CLI Commands
 
@@ -267,6 +347,8 @@ Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/health` (retu
 
 | Problem                                                            | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`plugin register must be synchronous`**                          | OpenClaw 2026.7+ rejects async `register()`. Upgrade to latest v2 (setup runs in a child `openclaw cursor-brain setup` process). If install partially succeeded: run `openclaw cursor-brain setup` manually, then `openclaw gateway restart`. |
+| **`runtime extension entry not found: ./dist/index.js`**           | Install without building. From the repo dir run `npm install && npm run build`, confirm `dist/index.js` exists, then `openclaw plugins install ./` again.                                                                                                                                                                                                                                                          |
 | **WARNING: dangerous code patterns (child_process / env+network)** | OpenClaw scans plugins and may show this during install. This plugin legitimately uses `child_process` to run the Cursor agent and proxy, and reads env (e.g. `CURSOR_PATH`) to configure them. The plugin only passes a minimal env whitelist to the proxy child, not full `process.env`. You can ignore this warning for this plugin.                                                                                                                                                                        |
 | **Stuck after "Provider synced"**                                  | Old versions started proxy/timers during install; fixed in current release. Upgrade to latest.                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **No model selection during install**                              | Runs only in a TTY; otherwise run `openclaw cursor-brain setup` after install.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
